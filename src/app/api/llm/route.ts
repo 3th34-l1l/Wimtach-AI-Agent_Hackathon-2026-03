@@ -1,3 +1,12 @@
+/* ===========================
+FILE: /app/api/llm/route.ts
+FULL DROP-IN (demo-safe)
+✅ Provider flow: AUTO = OpenRouter → OpenAI fallback
+✅ Always returns 200 JSON (never hard-crashes UI)
+✅ Keeps OpenRouter required headers (Referer + Title)
+✅ Clears up “Read this page aloud” failures when OR key is wrong
+=========================== */
+
 import { NextResponse } from "next/server";
 import OpenAI from "openai";
 
@@ -25,7 +34,7 @@ Rules:
 - Be concise and practical.
 - If user asks for an official protocol/medical directive, say you may be wrong and recommend checking their Base Hospital / service directives.
 - Do NOT invent policies.
-`;
+`.trim();
 
 const SYSTEM_SCHEDULER = `
 You are an EMS Shift Scheduling Assistant.
@@ -41,12 +50,12 @@ Rules:
 - Ask short, structured follow-ups.
 - Confirm details before finalizing: date, start/end time, location/unit, partner constraints.
 - Output a clear summary at the end.
-`;
+`.trim();
 
 const SYSTEM_DEFAULT = `
 You are an EMS assistant helping paramedics complete forms quickly.
 Ask short structured questions, confirm key values, and summarize.
-`;
+`.trim();
 
 /* -----------------------
    Agent Router
@@ -87,23 +96,23 @@ function systemFor(mode: Mode) {
 }
 
 /* -----------------------
-   Providers
+   Provider calls
 ------------------------ */
 
 async function callOpenRouter(messages: Msg[], modelOverride?: string) {
-  const key = process.env.OPENROUTER_API_KEY;
+  const key = (process.env.OPENROUTER_API_KEY || "").trim();
   if (!key) throw new Error("OPENROUTER_API_KEY missing");
 
-  const model =
-    modelOverride || process.env.OPENROUTER_MODEL || "openai/gpt-4o-mini";
+  const model = (modelOverride || process.env.OPENROUTER_MODEL || "openai/gpt-4o-mini").trim();
 
   const r = await fetch("https://openrouter.ai/api/v1/chat/completions", {
     method: "POST",
     headers: {
       Authorization: `Bearer ${key}`,
       "Content-Type": "application/json",
-      "HTTP-Referer": "http://localhost:3000", // REQUIRED for some keys
-      "X-Title": "EMS AI Competition App",     // REQUIRED for some keys
+      // Required / recommended for some OpenRouter keys
+      "HTTP-Referer": process.env.OPENROUTER_REFERER || "http://localhost:3000",
+      "X-Title": process.env.OPENROUTER_APP_TITLE || "EMS AI Demo",
     },
     body: JSON.stringify({
       model,
@@ -112,21 +121,19 @@ async function callOpenRouter(messages: Msg[], modelOverride?: string) {
     }),
   });
 
-  if (!r.ok) {
-    const err = await r.text().catch(() => "");
-    throw new Error(`OpenRouter failed: ${r.status} ${err}`);
-  }
+  const txt = await r.text().catch(() => "");
+  if (!r.ok) throw new Error(`OpenRouter failed: ${r.status} ${txt}`);
 
-  const json = await r.json();
-  return json?.choices?.[0]?.message?.content ?? "";
+  const json = JSON.parse(txt);
+  return String(json?.choices?.[0]?.message?.content ?? "").trim();
 }
 
 async function callOpenAI(messages: Msg[], modelOverride?: string) {
-  const key = process.env.OPENAI_API_KEY;
+  const key = (process.env.OPENAI_API_KEY || "").trim();
   if (!key) throw new Error("OPENAI_API_KEY missing (fallback unavailable)");
 
   const client = new OpenAI({ apiKey: key });
-  const model = modelOverride || process.env.OPENAI_MODEL || "gpt-4o-mini";
+  const model = (modelOverride || process.env.OPENAI_MODEL || "gpt-4o-mini").trim();
 
   const res = await client.chat.completions.create({
     model,
@@ -134,57 +141,100 @@ async function callOpenAI(messages: Msg[], modelOverride?: string) {
     messages,
   });
 
-  return res.choices?.[0]?.message?.content ?? "";
+  return String(res.choices?.[0]?.message?.content ?? "").trim();
 }
 
 /* -----------------------
-   Main Handler
+   Response helper
+------------------------ */
+
+function okJson(payload: any) {
+  // Demo-safe: ALWAYS return JSON 200 so UI never hard-crashes
+  return NextResponse.json(payload, { status: 200 });
+}
+
+/* -----------------------
+   Main handler
 ------------------------ */
 
 export async function POST(req: Request) {
   try {
-    const body = await req.json();
+    const body = await req.json().catch(() => ({}));
 
     const userMessages = body?.messages as Msg[];
     const provider = (body?.provider ?? "auto") as Provider;
     const modelOverride = body?.model as string | undefined;
 
     if (!Array.isArray(userMessages)) {
-      return NextResponse.json({ error: "Missing messages[]" }, { status: 400 });
+      return okJson({ ok: false, error: "Missing messages[]", text: "" });
     }
 
     const mode = detectMode(userMessages);
     const system = systemFor(mode);
 
-    // Build final message list: agent system + user conversation
+    // Final message list: agent system + conversation
     const messages: Msg[] = [{ role: "system", content: system }, ...userMessages];
 
     // Forced OpenRouter
     if (provider === "openrouter") {
-      const text = await callOpenRouter(messages, modelOverride);
-      return NextResponse.json({ provider: "openrouter", mode, text });
+      try {
+        const text = await callOpenRouter(messages, modelOverride);
+        return okJson({ ok: true, provider: "openrouter", mode, text });
+      } catch (e: any) {
+        return okJson({
+          ok: false,
+          provider: "openrouter",
+          mode,
+          text: "",
+          error: String(e?.message || "OpenRouter failed"),
+        });
+      }
     }
 
     // Forced OpenAI
     if (provider === "openai") {
-      const text = await callOpenAI(messages, modelOverride);
-      return NextResponse.json({ provider: "openai", mode, text });
+      try {
+        const text = await callOpenAI(messages, modelOverride);
+        return okJson({ ok: true, provider: "openai", mode, text });
+      } catch (e: any) {
+        return okJson({
+          ok: false,
+          provider: "openai",
+          mode,
+          text: "",
+          error: String(e?.message || "OpenAI failed"),
+        });
+      }
     }
 
-    // AUTO (default): OpenRouter → fallback OpenAI
+    // AUTO: OpenRouter → OpenAI fallback
     try {
       const text = await callOpenRouter(messages, modelOverride);
-      return NextResponse.json({ provider: "openrouter", mode, text });
-    } catch (err) {
-      console.warn("OpenRouter failed, fallback OpenAI:", err);
-      const text = await callOpenAI(messages, modelOverride);
-      return NextResponse.json({ provider: "openai", mode, text });
+      return okJson({ ok: true, provider: "openrouter", mode, text });
+    } catch (err: any) {
+      try {
+        const text = await callOpenAI(messages, modelOverride);
+        return okJson({
+          ok: true,
+          provider: "openai",
+          mode,
+          text,
+          fallbackFrom: "openrouter",
+          fallbackError: String(err?.message || err || "OpenRouter failed"),
+        });
+      } catch (e2: any) {
+        return okJson({
+          ok: false,
+          provider: "auto",
+          mode,
+          text: "",
+          error: "Both providers failed",
+          openrouterError: String(err?.message || err || ""),
+          openaiError: String(e2?.message || e2 || ""),
+        });
+      }
     }
   } catch (err: any) {
-    console.error("LLM route error:", err);
-    return NextResponse.json(
-      { error: err?.message || "LLM request failed" },
-      { status: 500 }
-    );
+    return okJson({ ok: false, text: "", error: String(err?.message || "LLM request failed") });
   }
 }

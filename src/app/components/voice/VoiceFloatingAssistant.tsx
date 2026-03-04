@@ -1,10 +1,22 @@
 /* ===========================
 FILE: /components/voice/VoiceFloatingAssistant.tsx
 (or /src/app/components/voice/VoiceFloatingAssistant.tsx)
+FULL DROP-IN (presentation-ready demo build)
+✅ Read this page aloud (reliable)
+✅ Push-to-talk recording (tap to start/stop)
+✅ Auto-stop after ~7s of silence / inactivity
+✅ STT via /api/stt
+✅ TTS via /api/tts
+✅ JSON actions apply to AppState + Undo + Review
+✅ Supports SET_FOCUS_FIELD + SET_FIELD_VALUE (form workflow + highlight)
+✅ Workflow rule: if user says “finish/complete this form” -> start immediately (focus first field + ask Q)
+✅ Prevents mic recording its own TTS (stops mic before speaking)
+✅ Optional hands-free loop: after assistant speaks in Talk mode, auto-relisten
+✅ Stops mic tracks (no “stuck mic”)
 =========================== */
 "use client";
 
-import React, { useMemo, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   Mic,
   Volume2,
@@ -52,6 +64,21 @@ type JsonAction =
       type: "CONFIRM_EMAIL_SENT";
       to?: string;
       subject?: string;
+      spoken?: string;
+      question?: string;
+    }
+  // ✅ NEW: focus highlight support
+  | {
+      type: "SET_FOCUS_FIELD";
+      id: string;
+      spoken?: string;
+      question?: string;
+    }
+  // ✅ NEW: generic form field fill support
+  | {
+      type: "SET_FIELD_VALUE";
+      id: string; // e.g., "occurrence.callNumber"
+      value: string;
       spoken?: string;
       question?: string;
     }
@@ -145,6 +172,7 @@ function userWantsUpdates(userText: string) {
     t.includes("mark ") ||
     t.includes("update") ||
     t.includes("fill") ||
+    t.includes("finish") ||
     t.includes("complete") ||
     t.includes("change") ||
     t.includes("toggle") ||
@@ -154,6 +182,16 @@ function userWantsUpdates(userText: string) {
     t.includes("good") ||
     t.includes("bad")
   );
+}
+
+function firstFieldForPath(pathname: string) {
+  const p = pathname.toLowerCase();
+  if (p.includes("/forms/occurrence")) return "occurrence.date";
+  if (p.includes("/forms/teddy")) return "teddy.datetime";
+  // Status/Shift have their own UX; keep placeholders if you want
+  if (p.includes("/forms/status")) return "status.ACRc";
+  if (p.includes("/forms/shift")) return "shift.upload";
+  return "";
 }
 
 export function VoiceFloatingAssistant() {
@@ -177,6 +215,13 @@ export function VoiceFloatingAssistant() {
   const [lastAction, setLastAction] = useState<JsonAction | null>(null);
   const [reviewOpen, setReviewOpen] = useState(false);
 
+  const [lastTranscript, setLastTranscript] = useState<string>("");
+  const [sttError, setSttError] = useState<string>("");
+
+  // If true, after assistant responds in Talk mode, we auto re-listen.
+  // Presentation-friendly hands-free loop.
+  const AUTO_RELISTEN_AFTER_REPLY = true;
+
   const undoSnapshotRef = useRef<{
     selectedForm: string;
     narrative: string;
@@ -187,35 +232,106 @@ export function VoiceFloatingAssistant() {
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const mediaRef = useRef<MediaRecorder | null>(null);
 
+  // ✅ silence auto-stop
+  const silenceTimerRef = useRef<number | null>(null);
+  const lastVoiceAtRef = useRef<number>(0);
+
+  // helps iOS “first audio tap” unlock
+  const audioUnlockedRef = useRef(false);
+
+  // remembers if we should start recording after TTS completes (hands-free)
+  const pendingRelistenRef = useRef(false);
+
   const pathname = typeof window !== "undefined" ? window.location.pathname : "/";
   const ctx = useMemo(() => pageContext(pathname), [pathname]);
 
+  useEffect(() => {
+    const unlock = async () => {
+      if (audioUnlockedRef.current) return;
+      audioUnlockedRef.current = true;
+      try {
+        const a = new Audio();
+        await a.play().catch(() => {});
+      } catch {}
+    };
+    window.addEventListener("click", unlock, { once: true });
+    window.addEventListener("touchstart", unlock, { once: true });
+    return () => {
+      window.removeEventListener("click", unlock);
+      window.removeEventListener("touchstart", unlock);
+    };
+  }, []);
+
+  function clearSilenceTimer() {
+    if (silenceTimerRef.current) {
+      window.clearInterval(silenceTimerRef.current);
+      silenceTimerRef.current = null;
+    }
+  }
+
+  // ✅ stop timers + recorder + tracks
+  function stopRecording() {
+    clearSilenceTimer();
+
+    const mr = mediaRef.current;
+    if (!mr) return;
+
+    if (mr.state !== "inactive") mr.stop();
+
+    try {
+      const stream = (mr as any).stream as MediaStream | undefined;
+      stream?.getTracks?.().forEach((t) => t.stop());
+    } catch {}
+  }
+
   async function playTTS(text: string, ttsMode: TTSMode = "assistant") {
     if (!voiceOn) return;
+
     const clean = String(text ?? "").trim();
     if (!clean) return;
 
     try {
+      // ✅ prevent mic capturing assistant voice
+      if (recording) stopRecording();
+
+      // stop any in-progress audio first
+      if (audioRef.current) {
+        audioRef.current.pause();
+        audioRef.current.src = "";
+      }
+
       const r = await fetch("/api/tts", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ text: clean, mode: ttsMode }),
       });
 
+      // demo-safe: allow “no audio” responses
+      if (r.status === 204) return;
       if (!r.ok) return;
+
       const blob = await r.blob();
+      if (!blob || blob.size === 0) return;
+
       const url = URL.createObjectURL(blob);
-
-      if (audioRef.current) {
-        audioRef.current.pause();
-        audioRef.current.src = "";
-      }
-
       const a = new Audio(url);
       audioRef.current = a;
+
+      // ✅ after TTS ends, optionally re-listen (Talk mode hands-free)
+      a.onended = () => {
+        URL.revokeObjectURL(url);
+        if (pendingRelistenRef.current) {
+          pendingRelistenRef.current = false;
+          // small delay to avoid immediate tail-capture
+          setTimeout(() => {
+            if (!busy && mode === "talk" && open) startRecording();
+          }, 350);
+        }
+      };
+
       await a.play();
     } catch {
-      // ignore autoplay restrictions errors
+      // ignore autoplay errors
     }
   }
 
@@ -267,14 +383,29 @@ export function VoiceFloatingAssistant() {
       const line = `✅ Email sent${a.to ? ` to ${a.to}` : ""}${a.subject ? `: ${a.subject}` : ""}.`;
       dispatchAction({ type: "APPEND_CHAT_NOTE", text: line });
     }
+
+    // ✅ NEW: focus highlight
+    if (a.type === "SET_FOCUS_FIELD" && typeof (a as any).id === "string") {
+      dispatchAction({ type: "SET_FOCUS_FIELD", id: (a as any).id });
+    }
+
+    // ✅ NEW: generic form fill
+    if (a.type === "SET_FIELD_VALUE" && typeof (a as any).id === "string") {
+      dispatchAction({
+        type: "SET_FIELD_VALUE",
+        id: (a as any).id,
+        value: String((a as any).value ?? ""),
+      });
+    }
   }
 
   async function callAssistant(userText: string) {
     setBusy(true);
-
     const wantsJson = userWantsUpdates(userText);
 
     try {
+      const firstField = firstFieldForPath(activePage ?? pathname);
+
       const system = `${ctx.prompt}
 
 CURRENT PAGE: ${ctx.title}
@@ -292,27 +423,30 @@ ${JSON.stringify(statusMap ?? {}, null, 2)}
 SHIFT SCHEDULE (Form 3):
 ${JSON.stringify(shiftSchedule ?? [], null, 2)}
 
-RULES:
-- If the user is asking to UPDATE/FILL/COMPLETE something on this page, respond ONLY with valid JSON (no extra text).
-- Otherwise respond normally.
+WORKFLOW RULES (VERY IMPORTANT):
+- If the user asks to complete/fill/finish the CURRENT open form, you MUST start immediately.
+- First action must be SET_FOCUS_FIELD for the first field on this page.
+- Then ask ONE short question for the value needed for that field.
+- After user answers, set the field value (SET_FIELD_VALUE), then move focus to the next field, repeating until complete.
+- Only one field at a time.
+- Keep each spoken segment under ~10–15 seconds.
 
-JSON ACTION FORMAT:
-1) Patch status cards:
-{ "type":"PATCH_STATUS", "patch": { "ACRc":"GOOD", "OVER":"BAD" }, "spoken":"...", "question":"..." }
+FIRST FIELD FOR THIS PAGE:
+${firstField ? `- ${firstField}` : "- (unknown)"}
 
-2) Set narrative:
+JSON ACTION FORMAT (Return JSON ONLY when updating):
+{ "type":"SET_FOCUS_FIELD", "id":"occurrence.date", "spoken":"...", "question":"..." }
+{ "type":"SET_FIELD_VALUE", "id":"occurrence.date", "value":"2026-03-04", "spoken":"...", "question":"..." }
+{ "type":"PATCH_STATUS", "patch": { "ACRc":"GOOD" }, "spoken":"...", "question":"..." }
 { "type":"SET_NARRATIVE", "text":"...", "spoken":"...", "question":"..." }
-
-3) Set selected form:
-{ "type":"SET_SELECTED_FORM", "form":"Shift Report", "spoken":"..." }
-
-4) Confirm email:
+{ "type":"SET_SELECTED_FORM", "form":"Occurrence Report", "spoken":"..." }
 { "type":"CONFIRM_EMAIL_SENT", "to":"...", "subject":"...", "spoken":"..." }
-
-5) No page updates:
 { "type":"NO_ACTION", "spoken":"...", "question":"..." }
 
-When speaking aloud, keep it under 15 seconds.`;
+RULES:
+- If the user is asking to UPDATE/FILL/FINISH/COMPLETE something on this page, respond ONLY with valid JSON (no extra text).
+- Otherwise respond normally.
+`.trim();
 
       const payload = {
         provider: "openrouter",
@@ -333,7 +467,7 @@ When speaking aloud, keep it under 15 seconds.`;
         body: JSON.stringify(payload),
       });
 
-      const data = await r.json();
+      const data = await r.json().catch(() => ({}));
       const text = String(data?.text ?? "—").trim();
 
       const maybe = extractJson(text) as JsonAction | null;
@@ -348,10 +482,23 @@ When speaking aloud, keep it under 15 seconds.`;
         const spoken = (maybe as any).spoken ? String((maybe as any).spoken) : "";
         const question = (maybe as any).question ? String((maybe as any).question) : "";
 
-        if (spoken) await playTTS(spoken, maybe.type === "NO_ACTION" ? "assistant" : "scribe");
-        if (question) await playTTS(question, "assistant");
+        // If we are in Talk mode, after assistant finishes speaking we can auto-relisten
+        pendingRelistenRef.current = AUTO_RELISTEN_AFTER_REPLY && mode === "talk";
+
+        // ✅ prevent overlap
+        if (spoken) {
+          await playTTS(spoken, maybe.type === "NO_ACTION" ? "assistant" : "scribe");
+        }
+        if (question) {
+          await new Promise((res) => setTimeout(res, 250));
+          await playTTS(question, "assistant");
+        }
+
         return;
       }
+
+      // non-JSON normal response
+      pendingRelistenRef.current = AUTO_RELISTEN_AFTER_REPLY && mode === "talk";
 
       const lower = text.toLowerCase();
       const ttsMode: TTSMode =
@@ -365,60 +512,137 @@ When speaking aloud, keep it under 15 seconds.`;
     }
   }
 
+  // ✅ Reliable “read aloud” path (always speaks)
   async function handleListenNow() {
-    await callAssistant("Give me a quick spoken summary of this page and what I should do next.");
+    if (busy) return;
+    setBusy(true);
+    try {
+      const prompt = `
+Summarize the CURRENT page for the medic in under 10 seconds.
+
+PAGE: ${ctx.title}
+GOAL: ${ctx.goal}
+
+Say:
+- What this page is for
+- The next 1–2 actions the medic should do
+- End with one short question (e.g., "What do you want to do next?")
+`.trim();
+
+      const r = await fetch("/api/llm", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          provider: "openrouter",
+          messages: [
+            { role: "system", content: ctx.prompt },
+            { role: "user", content: prompt },
+          ],
+        }),
+      });
+
+      const data = await r.json().catch(() => ({}));
+      const text = String(data?.text ?? "").trim();
+
+      pendingRelistenRef.current = AUTO_RELISTEN_AFTER_REPLY && mode === "talk";
+
+      if (text) {
+        await playTTS(text, "assistant");
+      } else {
+        await playTTS("I’m ready. What would you like to do next?", "assistant");
+      }
+    } finally {
+      setBusy(false);
+    }
   }
 
   async function startRecording() {
     if (recording || busy) return;
 
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    const mimeCandidates = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4"];
-    const mimeType = mimeCandidates.find((m) => MediaRecorder.isTypeSupported(m)) || "";
+    setLastTranscript("");
+    setSttError("");
 
-    const mr = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
-    mediaRef.current = mr;
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
 
-    const chunks: BlobPart[] = [];
-    mr.ondataavailable = (e) => e.data && e.data.size > 0 && chunks.push(e.data);
+      const mimeCandidates = ["audio/mp4", "audio/webm;codecs=opus", "audio/webm"];
+      const mimeType = mimeCandidates.find((m) => MediaRecorder.isTypeSupported(m)) || "";
 
-    mr.onstop = async () => {
-      stream.getTracks().forEach((t) => t.stop());
-      setRecording(false);
+      const mr = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
+      mediaRef.current = mr;
 
-      const blob = new Blob(chunks, { type: mr.mimeType || "audio/webm" });
-      if (!blob.size) return;
+      const chunks: BlobPart[] = [];
 
-      setBusy(true);
-      try {
-        const fd = new FormData();
-        fd.append("file", blob, "voice.webm");
+      mr.ondataavailable = (e) => {
+        if (e.data && e.data.size > 0) {
+          chunks.push(e.data);
+          lastVoiceAtRef.current = Date.now();
+        }
+      };
 
-        const sttRes = await fetch("/api/stt", { method: "POST", body: fd });
-        const stt = await sttRes.json().catch(() => ({}));
-        const ok = Boolean(stt?.ok);
-        const transcript = String(stt?.text ?? "").trim();
+      mr.onstop = async () => {
+        // stop tracks to avoid “stuck mic”
+        try {
+          stream.getTracks().forEach((t) => t.stop());
+        } catch {}
 
-        if (!ok || !transcript) {
-          // show fallback UI (typed input) and show stt.error
-          await playTTS("Sorry, I didn’t catch that. Try again.", "assistant");
-                  return;
+        setRecording(false);
+        clearSilenceTimer();
+
+        const blob = new Blob(chunks, { type: mr.mimeType || "audio/webm" });
+        if (!blob.size) {
+          setSttError("No audio captured.");
+          await playTTS("I didn’t catch that. Please try again.", "assistant");
+          return;
         }
 
-        await callAssistant(transcript);
-      } finally {
-        setBusy(false);
-      }
-    };
+        setBusy(true);
+        try {
+          const mt = mr.mimeType || blob.type || "";
+          const ext = mt.includes("mp4") ? "m4a" : mt.includes("wav") ? "wav" : "webm";
 
-    mr.start();
-    setRecording(true);
-  }
+          const fd = new FormData();
+          fd.append("file", blob, `voice.${ext}`);
 
-  function stopRecording() {
-    const mr = mediaRef.current;
-    if (!mr) return;
-    if (mr.state !== "inactive") mr.stop();
+          const sttRes = await fetch("/api/stt", { method: "POST", body: fd });
+          const stt = await sttRes.json().catch(() => ({}));
+
+          const ok = Boolean(stt?.ok);
+          const transcript = String(stt?.text ?? "").trim();
+          const err = String(stt?.error ?? "").trim();
+
+          setLastTranscript(transcript);
+          setSttError(ok ? "" : err || "STT failed");
+
+          if (!ok || !transcript) {
+            await playTTS("Sorry, I didn’t catch that. Try again.", "assistant");
+            return;
+          }
+
+          await callAssistant(transcript);
+        } finally {
+          setBusy(false);
+        }
+      };
+
+      // start recording with chunking (mobile reliability)
+      lastVoiceAtRef.current = Date.now();
+      mr.start(250);
+      setRecording(true);
+
+      // ✅ auto-stop after ~7s with no audio chunks
+      silenceTimerRef.current = window.setInterval(() => {
+        const silentFor = Date.now() - lastVoiceAtRef.current;
+        if (silentFor > 7000) {
+          stopRecording();
+        }
+      }, 1000);
+    } catch (e: any) {
+      setRecording(false);
+      clearSilenceTimer();
+      setSttError(e?.message || "Mic permission denied.");
+      await playTTS("Mic permission denied. You can type instead.", "assistant");
+    }
   }
 
   const lastActionPretty = useMemo(() => {
@@ -441,7 +665,7 @@ When speaking aloud, keep it under 15 seconds.`;
         <Mic className="h-6 w-6 text-white" />
       </button>
 
-      {/* Panel (NO full-screen dimmer — keeps the form visible & clickable) */}
+      {/* Panel */}
       {open && (
         <div className="fixed bottom-5 right-5 left-5 sm:left-auto sm:w-[420px] z-[70] pointer-events-none">
           <Card className="pointer-events-auto rounded-3xl bg-zinc-950/60 backdrop-blur-xl p-4 shadow-2xl shadow-black/40 ring-1 ring-white/10">
@@ -449,8 +673,6 @@ When speaking aloud, keep it under 15 seconds.`;
               <div>
                 <div className="flex items-center gap-2">
                   <div className="text-sm font-semibold text-white">Voice Assistant</div>
-
-                  {/* HUD pill */}
                   <div className="inline-flex items-center gap-1 rounded-full bg-black/30 px-2 py-0.5 text-[11px] text-zinc-200 ring-1 ring-white/10">
                     <span
                       className={`h-1.5 w-1.5 rounded-full ${
@@ -481,17 +703,11 @@ When speaking aloud, keep it under 15 seconds.`;
 
             {/* Mode */}
             <div className="mt-4 grid grid-cols-2 gap-2">
-              <Button
-                variant={mode === "listen" ? "primary" : "ghost"}
-                onClick={() => setMode("listen")}
-              >
+              <Button variant={mode === "listen" ? "primary" : "ghost"} onClick={() => setMode("listen")}>
                 <MessageSquareText className="mr-2 h-4 w-4" />
                 Listen
               </Button>
-              <Button
-                variant={mode === "talk" ? "primary" : "ghost"}
-                onClick={() => setMode("talk")}
-              >
+              <Button variant={mode === "talk" ? "primary" : "ghost"} onClick={() => setMode("talk")}>
                 <Mic className="mr-2 h-4 w-4" />
                 Talk
               </Button>
@@ -501,6 +717,19 @@ When speaking aloud, keep it under 15 seconds.`;
             <div className="mt-3 rounded-2xl bg-black/25 p-3 text-xs text-zinc-200 ring-1 ring-white/5">
               <div className="text-zinc-300/70">Goal</div>
               <div className="mt-1">{ctx.goal}</div>
+            </div>
+
+            {/* Transcript + STT status */}
+            <div className="mt-3 rounded-2xl bg-black/25 p-3 text-xs text-zinc-200 ring-1 ring-white/5">
+              <div className="text-zinc-300/70">Heard</div>
+              <div className="mt-1 min-h-[18px]">
+                {lastTranscript ? (
+                  <span className="text-zinc-100">{lastTranscript}</span>
+                ) : (
+                  <span className="text-zinc-400">—</span>
+                )}
+              </div>
+              {sttError ? <div className="mt-2 text-[11px] text-amber-300/80">{sttError}</div> : null}
             </div>
 
             {/* Primary action */}
@@ -519,15 +748,13 @@ When speaking aloud, keep it under 15 seconds.`;
                 </Button>
               ) : (
                 <div className="relative w-full">
-                  {/* pulse ring while recording */}
                   {recording && (
                     <span className="pointer-events-none absolute -inset-1 rounded-2xl bg-red-500/20 blur-md" />
                   )}
+
                   <Button
                     variant="primary"
-                    className={`w-full relative ${
-                      recording ? "bg-red-600 hover:bg-red-600/90" : ""
-                    }`}
+                    className={`w-full relative ${recording ? "bg-red-600 hover:bg-red-600/90" : ""}`}
                     onClick={() => (recording ? stopRecording() : startRecording())}
                     disabled={busy}
                   >
@@ -546,7 +773,6 @@ When speaking aloud, keep it under 15 seconds.`;
                     )}
                   </Button>
 
-                  {/* small ping dot */}
                   {recording && (
                     <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2">
                       <span className="absolute inline-flex h-3 w-3 animate-ping rounded-full bg-red-400/80" />
