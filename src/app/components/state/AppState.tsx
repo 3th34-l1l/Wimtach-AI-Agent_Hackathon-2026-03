@@ -12,7 +12,8 @@ type Action =
   | { type: "SET_NARRATIVE"; text: string }
   | { type: "PATCH_STATUS"; patch: Record<string, StatusValue> }
   | { type: "SET_SHIFT_SCHEDULE"; rows: ShiftRow[] }
-  | { type: "APPEND_CHAT_NOTE"; text: string };
+  | { type: "APPEND_CHAT_NOTE"; text: string }
+  | { type: "SET_FOCUS_FIELD"; id: string }; // ✅ NEW
 
 type AppStateValue = {
   activePage: string;
@@ -33,6 +34,10 @@ type AppStateValue = {
   shiftSchedule: ShiftRow[];
   setShiftSchedule: (rows: ShiftRow[]) => void;
 
+  // ✅ Focus support for “one thing at a time”
+  focusField: string;
+  setFocusField: (id: string) => void;
+
   dispatchAction: (a: Action) => void;
 };
 
@@ -50,6 +55,9 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
 
   // ✅ Form 3 schedule rows
   const [shiftSchedule, setShiftSchedule] = useState<ShiftRow[]>([]);
+
+  // ✅ NEW: what the assistant wants the user to focus
+  const [focusField, setFocusField] = useState<string>("");
 
   function patchStatus(patch: Record<string, StatusValue>) {
     setStatusMap((prev) => ({ ...prev, ...patch }));
@@ -78,6 +86,9 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
       case "APPEND_CHAT_NOTE":
         setNarrative((prev) => (prev === "—" ? a.text : `${prev}\n\n${a.text}`));
         return;
+      case "SET_FOCUS_FIELD":
+        setFocusField(a.id);
+        return;
     }
   }
 
@@ -101,9 +112,12 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
       shiftSchedule,
       setShiftSchedule,
 
+      focusField,
+      setFocusField,
+
       dispatchAction,
     }),
-    [activePage, selectedForm, weatherSummary, narrative, statusMap, shiftSchedule]
+    [activePage, selectedForm, weatherSummary, narrative, statusMap, shiftSchedule, focusField]
   );
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;

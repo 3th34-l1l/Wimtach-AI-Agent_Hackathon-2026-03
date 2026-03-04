@@ -138,8 +138,6 @@ function extractJson(text: string) {
   return null;
 }
 
-// Heuristic: if user says “set/mark/update/fill/complete/change/undo”,
-// we force JSON response so we can dispatch actions
 function userWantsUpdates(userText: string) {
   const t = userText.toLowerCase();
   return (
@@ -176,11 +174,9 @@ export function VoiceFloatingAssistant() {
   const [recording, setRecording] = useState(false);
   const [mode, setMode] = useState<VoiceMode>("listen");
 
-  // Review/Undo
   const [lastAction, setLastAction] = useState<JsonAction | null>(null);
   const [reviewOpen, setReviewOpen] = useState(false);
 
-  // Snapshot used for undo (keep it minimal and safe)
   const undoSnapshotRef = useRef<{
     selectedForm: string;
     narrative: string;
@@ -241,18 +237,14 @@ export function VoiceFloatingAssistant() {
     dispatchAction({ type: "PATCH_STATUS", patch: snap.statusMap });
     dispatchAction({ type: "SET_SHIFT_SCHEDULE", rows: snap.shiftSchedule });
 
-    // Clear last action after undo (optional)
     setLastAction(null);
     setReviewOpen(false);
 
-    // Speak confirmation
     playTTS("Undo complete. I reverted the last change.", "assistant");
   }
 
   function applyJsonAction(a: JsonAction) {
-    // Save snapshot BEFORE we change anything (so undo works)
     saveUndoSnapshot();
-
     setLastAction(a);
 
     if (a.type === "PATCH_STATUS" && a.patch) {
@@ -346,7 +338,6 @@ When speaking aloud, keep it under 15 seconds.`;
 
       const maybe = extractJson(text) as JsonAction | null;
 
-      // If model returned JSON action → apply + speak spoken
       if (maybe && typeof maybe === "object" && "type" in maybe) {
         if (maybe.type !== "NO_ACTION") {
           applyJsonAction(maybe);
@@ -362,7 +353,6 @@ When speaking aloud, keep it under 15 seconds.`;
         return;
       }
 
-      // Not JSON → normal speech
       const lower = text.toLowerCase();
       const ttsMode: TTSMode =
         lower.includes("step") || lower.includes("action") || lower.includes("summary")
@@ -406,11 +396,13 @@ When speaking aloud, keep it under 15 seconds.`;
 
         const sttRes = await fetch("/api/stt", { method: "POST", body: fd });
         const stt = await sttRes.json().catch(() => ({}));
+        const ok = Boolean(stt?.ok);
         const transcript = String(stt?.text ?? "").trim();
 
-        if (!transcript) {
+        if (!ok || !transcript) {
+          // show fallback UI (typed input) and show stt.error
           await playTTS("Sorry, I didn’t catch that. Try again.", "assistant");
-          return;
+                  return;
         }
 
         await callAssistant(transcript);
@@ -449,69 +441,93 @@ When speaking aloud, keep it under 15 seconds.`;
         <Mic className="h-6 w-6 text-white" />
       </button>
 
-      {/* Panel */}
+      {/* Panel (NO full-screen dimmer — keeps the form visible & clickable) */}
       {open && (
-        <div className="fixed inset-0 z-[70] bg-black/50 backdrop-blur-sm">
-          <div className="fixed bottom-5 right-5 left-5 sm:left-auto sm:w-[420px]">
-            <Card className="rounded-3xl bg-zinc-950/90 p-4 shadow-2xl shadow-black/40 ring-1 ring-white/10">
-              <div className="flex items-start justify-between gap-3">
-                <div>
-                  <div className="text-sm font-semibold text-white">Voice Assistant</div>
-                  <div className="text-xs text-zinc-400">{ctx.title}</div>
-                </div>
-
+        <div className="fixed bottom-5 right-5 left-5 sm:left-auto sm:w-[420px] z-[70] pointer-events-none">
+          <Card className="pointer-events-auto rounded-3xl bg-zinc-950/60 backdrop-blur-xl p-4 shadow-2xl shadow-black/40 ring-1 ring-white/10">
+            <div className="flex items-start justify-between gap-3">
+              <div>
                 <div className="flex items-center gap-2">
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => setVoiceOn((v) => !v)}
-                    title={voiceOn ? "Mute voice" : "Unmute voice"}
-                  >
-                    {voiceOn ? <Volume2 className="h-4 w-4" /> : <VolumeX className="h-4 w-4" />}
-                  </Button>
+                  <div className="text-sm font-semibold text-white">Voice Assistant</div>
 
-                  <Button variant="ghost" size="sm" onClick={() => setOpen(false)} title="Close">
-                    <X className="h-4 w-4" />
-                  </Button>
+                  {/* HUD pill */}
+                  <div className="inline-flex items-center gap-1 rounded-full bg-black/30 px-2 py-0.5 text-[11px] text-zinc-200 ring-1 ring-white/10">
+                    <span
+                      className={`h-1.5 w-1.5 rounded-full ${
+                        recording ? "bg-red-500" : busy ? "bg-amber-400" : "bg-emerald-400"
+                      }`}
+                    />
+                    {recording ? "Listening" : busy ? "Working" : "Ready"}
+                  </div>
                 </div>
+                <div className="text-xs text-zinc-300/80">{ctx.title}</div>
               </div>
 
-              {/* Mode */}
-              <div className="mt-4 grid grid-cols-2 gap-2">
-                <Button variant={mode === "listen" ? "primary" : "ghost"} onClick={() => setMode("listen")}>
-                  <MessageSquareText className="mr-2 h-4 w-4" />
-                  Listen
+              <div className="flex items-center gap-2">
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setVoiceOn((v) => !v)}
+                  title={voiceOn ? "Mute voice" : "Unmute voice"}
+                >
+                  {voiceOn ? <Volume2 className="h-4 w-4" /> : <VolumeX className="h-4 w-4" />}
                 </Button>
-                <Button variant={mode === "talk" ? "primary" : "ghost"} onClick={() => setMode("talk")}>
-                  <Mic className="mr-2 h-4 w-4" />
-                  Talk
+
+                <Button variant="ghost" size="sm" onClick={() => setOpen(false)} title="Close">
+                  <X className="h-4 w-4" />
                 </Button>
               </div>
+            </div>
 
-              {/* Goal */}
-              <div className="mt-3 rounded-2xl bg-black/30 p-3 text-xs text-zinc-300">
-                <div className="text-zinc-400">Goal</div>
-                <div className="mt-1">{ctx.goal}</div>
-              </div>
+            {/* Mode */}
+            <div className="mt-4 grid grid-cols-2 gap-2">
+              <Button
+                variant={mode === "listen" ? "primary" : "ghost"}
+                onClick={() => setMode("listen")}
+              >
+                <MessageSquareText className="mr-2 h-4 w-4" />
+                Listen
+              </Button>
+              <Button
+                variant={mode === "talk" ? "primary" : "ghost"}
+                onClick={() => setMode("talk")}
+              >
+                <Mic className="mr-2 h-4 w-4" />
+                Talk
+              </Button>
+            </div>
 
-              {/* Primary action */}
-              <div className="mt-3 flex items-center gap-2">
-                {mode === "listen" ? (
-                  <Button variant="primary" className="w-full" onClick={handleListenNow} disabled={busy}>
-                    {busy ? (
-                      <>
-                        <Loader2 className="mr-2 h-4 w-4 animate-spin" /> Thinking…
-                      </>
-                    ) : (
-                      <>
-                        <Volume2 className="mr-2 h-4 w-4" /> Read this page aloud
-                      </>
-                    )}
-                  </Button>
-                ) : (
+            {/* Goal */}
+            <div className="mt-3 rounded-2xl bg-black/25 p-3 text-xs text-zinc-200 ring-1 ring-white/5">
+              <div className="text-zinc-300/70">Goal</div>
+              <div className="mt-1">{ctx.goal}</div>
+            </div>
+
+            {/* Primary action */}
+            <div className="mt-3 flex items-center gap-2">
+              {mode === "listen" ? (
+                <Button variant="primary" className="w-full" onClick={handleListenNow} disabled={busy}>
+                  {busy ? (
+                    <>
+                      <Loader2 className="mr-2 h-4 w-4 animate-spin" /> Thinking…
+                    </>
+                  ) : (
+                    <>
+                      <Volume2 className="mr-2 h-4 w-4" /> Read this page aloud
+                    </>
+                  )}
+                </Button>
+              ) : (
+                <div className="relative w-full">
+                  {/* pulse ring while recording */}
+                  {recording && (
+                    <span className="pointer-events-none absolute -inset-1 rounded-2xl bg-red-500/20 blur-md" />
+                  )}
                   <Button
                     variant="primary"
-                    className="w-full"
+                    className={`w-full relative ${
+                      recording ? "bg-red-600 hover:bg-red-600/90" : ""
+                    }`}
                     onClick={() => (recording ? stopRecording() : startRecording())}
                     disabled={busy}
                   >
@@ -521,55 +537,63 @@ When speaking aloud, keep it under 15 seconds.`;
                       </>
                     ) : recording ? (
                       <>
-                        <Square className="mr-2 h-4 w-4" /> Stop recording
+                        <Square className="mr-2 h-4 w-4" /> Stop listening
                       </>
                     ) : (
                       <>
-                        <Mic className="mr-2 h-4 w-4" /> Tap to talk
+                        <Mic className="mr-2 h-4 w-4" /> Push to talk
                       </>
                     )}
                   </Button>
-                )}
-              </div>
 
-              {/* Review + Undo row */}
-              <div className="mt-3 grid grid-cols-2 gap-2">
-                <Button
-                  variant="ghost"
-                  onClick={() => setReviewOpen((v) => !v)}
-                  disabled={!lastAction}
-                  title="Review last applied action"
-                >
-                  <ClipboardList className="mr-2 h-4 w-4" />
-                  Review changes
-                </Button>
-
-                <Button
-                  variant="ghost"
-                  onClick={undoLast}
-                  disabled={!undoSnapshotRef.current}
-                  title="Undo last page update"
-                >
-                  <RotateCcw className="mr-2 h-4 w-4" />
-                  Undo
-                </Button>
-              </div>
-
-              {/* Review panel */}
-              {reviewOpen && (
-                <div className="mt-3 rounded-2xl bg-black/40 p-3 text-[11px] text-zinc-200 shadow-inner">
-                  <div className="mb-2 text-xs font-semibold text-zinc-300">Last Action JSON</div>
-                  <pre className="max-h-[180px] overflow-auto whitespace-pre-wrap break-words text-zinc-200">
-                    {lastActionPretty || "—"}
-                  </pre>
+                  {/* small ping dot */}
+                  {recording && (
+                    <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2">
+                      <span className="absolute inline-flex h-3 w-3 animate-ping rounded-full bg-red-400/80" />
+                      <span className="relative inline-flex h-3 w-3 rounded-full bg-red-500" />
+                    </span>
+                  )}
                 </div>
               )}
+            </div>
 
-              <div className="mt-3 text-[11px] text-zinc-500">
-                Tip: On iPhone/Chrome, audio only plays after a tap—use “Read this page aloud” once to unlock audio.
+            {/* Review + Undo row */}
+            <div className="mt-3 grid grid-cols-2 gap-2">
+              <Button
+                variant="ghost"
+                onClick={() => setReviewOpen((v) => !v)}
+                disabled={!lastAction}
+                title="Review last applied action"
+              >
+                <ClipboardList className="mr-2 h-4 w-4" />
+                Review changes
+              </Button>
+
+              <Button
+                variant="ghost"
+                onClick={undoLast}
+                disabled={!undoSnapshotRef.current}
+                title="Undo last page update"
+              >
+                <RotateCcw className="mr-2 h-4 w-4" />
+                Undo
+              </Button>
+            </div>
+
+            {/* Review panel */}
+            {reviewOpen && (
+              <div className="mt-3 rounded-2xl bg-black/30 p-3 text-[11px] text-zinc-100 shadow-inner ring-1 ring-white/5">
+                <div className="mb-2 text-xs font-semibold text-zinc-200">Last Action JSON</div>
+                <pre className="max-h-[180px] overflow-auto whitespace-pre-wrap break-words text-zinc-100">
+                  {lastActionPretty || "—"}
+                </pre>
               </div>
-            </Card>
-          </div>
+            )}
+
+            <div className="mt-3 text-[11px] text-zinc-300/60">
+              Tip: On iPhone/Chrome, audio only plays after a tap—use “Read this page aloud” once to unlock audio.
+            </div>
+          </Card>
         </div>
       )}
     </>

@@ -181,7 +181,8 @@ export function VoiceButton({
           const fd = new FormData();
           fd.append("file", file);
 
-          const res = await fetch("/api/stt", { method: "POST", body: fd });
+          const res = await fetch("/api/voice/transcribe", { method: "POST", body: fd });
+
           const data = await res.json().catch(() => ({}));
 
           if (!res.ok) {

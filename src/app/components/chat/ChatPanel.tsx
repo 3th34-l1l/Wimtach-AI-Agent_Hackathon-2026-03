@@ -4,15 +4,7 @@ import React, { useMemo, useRef, useState, useEffect } from "react";
 import { usePathname } from "next/navigation";
 import { Card } from "@/src/app/components/ui/Card";
 import { Button } from "@/src/app/components/ui/Button";
-import {
-  Send,
-  Mic,
-  CloudSun,
-  Volume2,
-  VolumeX,
-  Loader2,
-  Square,
-} from "lucide-react";
+import { Send, Mic, CloudSun, Volume2, VolumeX, Loader2, Square } from "lucide-react";
 import { useAppState } from "@/src/app/components/state/AppState";
 
 type Role = "ai" | "user";
@@ -27,26 +19,10 @@ function uid() {
     : String(Date.now() + Math.random());
 }
 
-/** ---------------------------
- * JSON ACTION CONTRACT
- * ----------------------------
- * AI may respond with EITHER:
- * 1) Plain text (fallback)
- * 2) JSON:
- * {
- *   "say": "string to speak/show",
- *   "setSelectedForm": "Occurrence Report | Teddy Bear Tracking | Shift Report | Paramedic Status",
- *   "appendNarrative": "string",
- *   "setNarrative": "string",
- *   "setWeatherSummary": "string",
- *   "status": {
- *     "set": [{ "key": "ACRc", "status": "GOOD" | "BAD" }],
- *     "issues": [{ "key": "ACRc", "issues": 2 }],
- *     "notes": [{ "key": "ACRc", "notes": "..." }],
- *     "markAllGood": true,
- *     "reset": true
- *   }
- * }
+/**
+ * JSON ACTION CONTRACT (matches your AppState)
+ * - We ONLY use actions your AppState can handle:
+ *   SET_SELECTED_FORM, SET_WEATHER, SET_NARRATIVE, PATCH_STATUS, SET_SHIFT_SCHEDULE, APPEND_CHAT_NOTE
  */
 type JsonAction = {
   say?: string;
@@ -54,10 +30,15 @@ type JsonAction = {
   appendNarrative?: string;
   setNarrative?: string;
   setWeatherSummary?: string;
+
+
+  // ✅ ADD THESE:
+  focusField?: string;
+  confirm?: string;
+  // NEW: allow shift schedule updates
+  setShiftSchedule?: Array<{ date?: string; start?: string; end?: string; unit?: string; team?: string }>;
   status?: {
     set?: { key: string; status: "GOOD" | "BAD" }[];
-    issues?: { key: string; issues: number }[];
-    notes?: { key: string; notes: string }[];
     markAllGood?: boolean;
     reset?: boolean;
   };
@@ -67,7 +48,6 @@ function safeParseJson(text: string): JsonAction | null {
   const raw = String(text ?? "").trim();
   if (!raw) return null;
 
-  // If it’s already pure JSON
   if (raw.startsWith("{") && raw.endsWith("}")) {
     try {
       return JSON.parse(raw);
@@ -76,7 +56,6 @@ function safeParseJson(text: string): JsonAction | null {
     }
   }
 
-  // If model wrapped JSON in fences
   const fenced = raw.match(/```json\s*([\s\S]*?)```/i) || raw.match(/```\s*([\s\S]*?)```/i);
   if (fenced?.[1]) {
     try {
@@ -86,7 +65,6 @@ function safeParseJson(text: string): JsonAction | null {
     }
   }
 
-  // If it included JSON somewhere inside
   const first = raw.indexOf("{");
   const last = raw.lastIndexOf("}");
   if (first !== -1 && last !== -1 && last > first) {
@@ -117,9 +95,8 @@ export function ChatPanel() {
     setWeatherSummary,
     setSelectedForm,
     setNarrative,
-    dispatch,
-    // OPTIONAL: if you store status items in state you can pass them to LLM
-    // statusItems,
+    statusMap,
+    dispatchAction,
   } = useAppState();
 
   const [provider, setProvider] = useState<Provider>("auto");
@@ -130,29 +107,33 @@ export function ChatPanel() {
   // Voice recording
   const [recording, setRecording] = useState(false);
   const [recordSecs, setRecordSecs] = useState(0);
+  const [lastTranscript, setLastTranscript] = useState<string>("");
+  const [sttError, setSttError] = useState<string>("");
 
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const mediaRef = useRef<MediaRecorder | null>(null);
   const recordTimerRef = useRef<number | null>(null);
+  const startedAtRef = useRef<number>(0);
 
   const canSend = input.trim().length > 0 && !busy;
   const list = useMemo(() => msgs, [msgs]);
 
   /** -----------------------------------------
-   * ACTIVE PAGE (used for “fill out current page”)
+   * ACTIVE PAGE (reliable, handles route variations)
    * ----------------------------------------- */
   const activePage = useMemo(() => {
-    if (pathname.includes("/forms/status")) return "status";
-    if (pathname.includes("/forms/shift")) return "shift";
-    if (pathname.includes("/forms/occurrence")) return "occurrence";
-    if (pathname.includes("/forms/teddy-bear")) return "teddy-bear";
-    if (pathname.includes("/dashboard")) return "dashboard";
-    if (pathname.includes("/chat")) return "chat";
+    const p = (pathname || "").toLowerCase();
+    if (p.includes("status")) return "status";
+    if (p.includes("shift")) return "shift";
+    if (p.includes("occurrence")) return "occurrence";
+    if (p.includes("teddy")) return "teddy-bear";
+    if (p.includes("dashboard")) return "dashboard";
+    if (p.includes("chat")) return "chat";
     return "unknown";
   }, [pathname]);
 
   /** -----------------------------------------
-   * AUDIO UNLOCK (helps “no sound” issues)
+   * AUDIO UNLOCK (helps iOS)
    * ----------------------------------------- */
   const audioUnlockedRef = useRef(false);
 
@@ -188,6 +169,9 @@ export function ChatPanel() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ text: clean, mode }),
       });
+
+      // Demo-safe: if server returns 204 (no audio), just skip
+      if (r.status === 204) return;
 
       if (!r.ok) {
         const err = await r.text().catch(() => "");
@@ -230,75 +214,112 @@ export function ChatPanel() {
     return null;
   }
 
-  /** ---------------- APPLY JSON ACTIONS TO STATE ---------------- */
-  function dispatchAction(a: JsonAction) {
-    if (!a) return;
+  /** ---------------- APPLY JSON ACTIONS TO APPSTATE ---------------- */
+  function applyJsonAction(a: JsonAction) {
+      if (!a) return;
 
-    if (a.setSelectedForm) setSelectedForm(String(a.setSelectedForm));
-    if (typeof a.setWeatherSummary === "string") setWeatherSummary(a.setWeatherSummary);
-    if (typeof a.setNarrative === "string") setNarrative(a.setNarrative);
+  // 1) form routing
+  if (a.setSelectedForm) setSelectedForm(String(a.setSelectedForm));
 
-    if (typeof a.appendNarrative === "string" && a.appendNarrative.trim()) {
-      const next = narrative && narrative !== "—"
+  // 2) narrative/weather
+  if (typeof a.setWeatherSummary === "string") setWeatherSummary(a.setWeatherSummary);
+  if (typeof a.setNarrative === "string") setNarrative(a.setNarrative);
+
+  if (typeof a.appendNarrative === "string" && a.appendNarrative.trim()) {
+    const next =
+      narrative && narrative !== "—"
         ? `${narrative}\n\n${a.appendNarrative.trim()}`
         : a.appendNarrative.trim();
-      setNarrative(next);
+    setNarrative(next);
+  }
+  // ✅ NEW (10 lines total effect): highlight + confirmation
+  if (typeof a.focusField === "string") {
+    dispatchAction({ type: "SET_FOCUS_FIELD", id: a.focusField });
+  }
+  if (typeof a.confirm === "string" && a.confirm.trim()) {
+    dispatchAction({ type: "APPEND_CHAT_NOTE", text: `✅ ${a.confirm.trim()}` });
+  }
+
+
+    if (a.setSelectedForm) {
+      setSelectedForm(String(a.setSelectedForm));
+      dispatchAction({ type: "SET_SELECTED_FORM", form: String(a.setSelectedForm) });
     }
 
-    if (a.status?.reset) dispatch({ type: "STATUS_RESET" });
-    if (a.status?.markAllGood) dispatch({ type: "STATUS_MARK_ALL_GOOD" });
+    if (typeof a.setWeatherSummary === "string") {
+      setWeatherSummary(a.setWeatherSummary);
+      dispatchAction({ type: "SET_WEATHER", text: a.setWeatherSummary });
+    }
+
+    if (typeof a.setNarrative === "string") {
+      setNarrative(a.setNarrative);
+      dispatchAction({ type: "SET_NARRATIVE", text: a.setNarrative });
+    }
+
+    if (typeof a.appendNarrative === "string" && a.appendNarrative.trim()) {
+      dispatchAction({ type: "APPEND_CHAT_NOTE", text: a.appendNarrative.trim() });
+    }
+
+    // Shift schedule updates (Phase 3 demo)
+    if (Array.isArray(a.setShiftSchedule)) {
+      dispatchAction({ type: "SET_SHIFT_SCHEDULE", rows: a.setShiftSchedule });
+    }
+
+    // Status updates (Form 4) — your AppState supports PATCH_STATUS only
+    if (a.status?.reset) {
+      dispatchAction({ type: "PATCH_STATUS", patch: {} });
+    }
+
+    if (a.status?.markAllGood) {
+      const patch: Record<string, "GOOD"> = {};
+      Object.keys(statusMap ?? {}).forEach((k) => (patch[k] = "GOOD"));
+      dispatchAction({ type: "PATCH_STATUS", patch });
+    }
 
     if (Array.isArray(a.status?.set)) {
-      for (const row of a.status!.set!) {
+      const patch: Record<string, "GOOD" | "BAD"> = {};
+      for (const row of a.status.set) {
         if (!row?.key || !row?.status) continue;
-        dispatch({ type: "STATUS_SET_STATUS", key: row.key, status: row.status });
+        patch[row.key] = row.status;
       }
-    }
-
-    if (Array.isArray(a.status?.issues)) {
-      for (const row of a.status!.issues!) {
-        if (!row?.key) continue;
-        dispatch({ type: "STATUS_SET_ISSUES", key: row.key, issues: Number(row.issues || 0) });
-      }
-    }
-
-    if (Array.isArray(a.status?.notes)) {
-      for (const row of a.status!.notes!) {
-        if (!row?.key) continue;
-        dispatch({ type: "STATUS_SET_NOTES", key: row.key, notes: String(row.notes ?? "") });
+      if (Object.keys(patch).length) {
+        dispatchAction({ type: "PATCH_STATUS", patch });
       }
     }
   }
 
   /** ---------------- LLM CALL (JSON action agent) ---------------- */
   async function sendToLLM(nextMsgs: Msg[]) {
-    const userText = nextMsgs[nextMsgs.length - 1]?.text ?? "";
-
     const system = `
 You are an EMS assistant that can update the app state.
 
 CURRENT PAGE: ${activePage}
+PATHNAME: ${pathname}
 
-RULES:
-- If the user is asking to UPDATE/FILL/CHANGE anything in the UI, respond ONLY as valid JSON matching this schema:
+If the user is asking to UPDATE/FILL/CHANGE anything in the UI, respond ONLY as valid JSON with this schema:
+
 {
-  "say": "what to show/speak",
+  "say": "short message to show/speak",
   "setSelectedForm": "Occurrence Report | Teddy Bear Tracking | Shift Report | Paramedic Status",
-  "appendNarrative": "text to add",
+  "appendNarrative": "text to add to narrative",
   "setNarrative": "replace narrative",
   "setWeatherSummary": "replace weather summary",
+  "setShiftSchedule": [
+    {"date":"YYYY-MM-DD","start":"HH:MM","end":"HH:MM","unit":"...","team":"..."}
+  ],
   "status": {
     "set": [{"key":"ACRc","status":"GOOD"}],
-    "issues": [{"key":"ACRc","issues":2}],
-    "notes": [{"key":"ACRc","notes":"..."}],
     "markAllGood": true,
     "reset": true
   }
 }
 
-- If the user is NOT asking for UI updates (just asking questions), you may answer normally (plain text).
+If the user is NOT asking for UI updates (just asking questions), you may answer normally (plain text).
+
+Demo tips:
+- For Shift swap/proposed change requests: put the request into appendNarrative and setSelectedForm to "Shift Report".
 - Keep "say" short and practical.
-- Do not include code fences unless the response is pure JSON (prefer pure JSON).
+- Prefer pure JSON when updating UI (no code fences).
 `.trim();
 
     const llmMessages = [
@@ -337,7 +358,6 @@ RULES:
     setBusy(true);
     setInput("");
 
-    // quick form hint (local)
     const maybeForm = detectSelectedForm(text);
     if (maybeForm) setSelectedForm(maybeForm);
 
@@ -348,46 +368,37 @@ RULES:
     try {
       const aiRaw = await sendToLLM(next);
 
-      // JSON action?
       const action = safeParseJson(aiRaw);
       if (action) {
-        // Apply
-        dispatchAction(action);
+        applyJsonAction(action);
 
         const say = String(action.say ?? "").trim() || "✅ Updated.";
-        const aiMsg: Msg = { id: uid(), role: "ai", text: say };
-        setMsgs((p) => [...p, aiMsg]);
-
+        setMsgs((p) => [...p, { id: uid(), role: "ai", text: say }]);
         await playTTS(say, pickTTSMode(say));
         return;
       }
 
-      // Plain text fallback
-      const aiMsg: Msg = { id: uid(), role: "ai", text: aiRaw };
-      setMsgs((p) => [...p, aiMsg]);
+      setMsgs((p) => [...p, { id: uid(), role: "ai", text: aiRaw }]);
 
-      // If it looks like a summary, append to narrative
       const mode = pickTTSMode(aiRaw);
       if (mode === "scribe") {
         const trimmed = aiRaw.replace(/^summary:\s*/i, "").trim();
         if (trimmed) {
           const updated = narrative === "—" ? trimmed : `${narrative}\n\n${trimmed}`;
           setNarrative(updated);
+          dispatchAction({ type: "SET_NARRATIVE", text: updated });
         }
       }
 
       await playTTS(aiRaw, mode);
     } catch (e: any) {
-      setMsgs((p) => [
-        ...p,
-        { id: uid(), role: "ai", text: `⚠️ Error: ${e?.message || "Failed to reach AI."}` },
-      ]);
+      setMsgs((p) => [...p, { id: uid(), role: "ai", text: `⚠️ Error: ${e?.message || "Failed to reach AI."}` }]);
     } finally {
       setBusy(false);
     }
   }
 
-  /** ---------------- VOICE RECORDING ---------------- */
+  /** ---------------- VOICE RECORDING (fallback-proof) ---------------- */
   function stopRecording() {
     try {
       if (recordTimerRef.current) {
@@ -409,17 +420,22 @@ RULES:
       return;
     }
 
+    setSttError("");
+    setLastTranscript("");
+
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
 
-      const mimeCandidates = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4"];
-      const mimeType =
-        mimeCandidates.find((m) => MediaRecorder.isTypeSupported(m)) || "";
+      // iOS/Safari prefers mp4/m4a when supported
+      const mimeCandidates = ["audio/mp4", "audio/webm;codecs=opus", "audio/webm"];
+      const mimeType = mimeCandidates.find((m) => MediaRecorder.isTypeSupported(m)) || "";
 
       const mr = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
       mediaRef.current = mr;
 
       const chunks: BlobPart[] = [];
+      startedAtRef.current = Date.now();
+
       mr.ondataavailable = (e) => {
         if (e.data && e.data.size > 0) chunks.push(e.data);
       };
@@ -428,28 +444,47 @@ RULES:
         stream.getTracks().forEach((t) => t.stop());
         setRecording(false);
 
+        const ms = Date.now() - (startedAtRef.current || Date.now());
+        if (ms < 600) {
+          const msg = "⚠️ Too short—hold the button and speak for 1–2 seconds.";
+          setMsgs((p) => [...p, { id: uid(), role: "ai", text: msg }]);
+          setSttError("Recording too short");
+          return;
+        }
+
         const blob = new Blob(chunks, { type: mr.mimeType || "audio/webm" });
         if (!blob || blob.size === 0) {
-          setMsgs((p) => [...p, { id: uid(), role: "ai", text: "⚠️ No audio captured. Try again." }]);
+          const msg = "⚠️ No audio captured. Try again.";
+          setMsgs((p) => [...p, { id: uid(), role: "ai", text: msg }]);
+          setSttError("No audio captured");
           return;
         }
 
         try {
           setBusy(true);
 
+          const mt = mr.mimeType || blob.type || "";
+          const ext = mt.includes("mp4") ? "m4a" : mt.includes("wav") ? "wav" : "webm";
           const formData = new FormData();
-          formData.append("file", blob, "voice.webm");
+          formData.append("file", blob, `voice.${ext}`);
 
           const sttRes = await fetch("/api/stt", { method: "POST", body: formData });
-          if (!sttRes.ok) {
-            const err = await sttRes.text().catch(() => "");
-            throw new Error(err || `STT failed (${sttRes.status})`);
-          }
 
-          const stt = await sttRes.json();
+          // Our fallback-proof /api/stt returns 200 even on failure.
+          const stt = await sttRes.json().catch(() => ({}));
+          const ok = Boolean(stt?.ok);
           const transcript = String(stt?.text ?? "").trim();
-          if (!transcript) {
-            setMsgs((p) => [...p, { id: uid(), role: "ai", text: "⚠️ Couldn’t transcribe. Try again." }]);
+          const err = String(stt?.error ?? "").trim();
+
+          setLastTranscript(transcript);
+          setSttError(ok ? "" : err || "STT failed");
+
+          if (!ok || !transcript) {
+            const msg =
+              `⚠️ Couldn’t transcribe.` +
+              (err ? ` (${err})` : "") +
+              ` Try again or type your message.`;
+            setMsgs((p) => [...p, { id: uid(), role: "ai", text: msg }]);
             return;
           }
 
@@ -465,7 +500,7 @@ RULES:
 
           const action = safeParseJson(aiRaw);
           if (action) {
-            dispatchAction(action);
+            applyJsonAction(action);
             const say = String(action.say ?? "").trim() || "✅ Updated.";
             setMsgs((p) => [...p, { id: uid(), role: "ai", text: say }]);
             await playTTS(say, pickTTSMode(say));
@@ -481,7 +516,8 @@ RULES:
         }
       };
 
-      mr.start();
+      // More reliable chunking on mobile
+      mr.start(250);
       setRecording(true);
 
       setRecordSecs(0);
@@ -510,28 +546,26 @@ RULES:
       const lat = pos.coords.latitude;
       const lon = pos.coords.longitude;
 
-      const r = await fetch(
-        `/api/weather?lat=${encodeURIComponent(lat)}&lon=${encodeURIComponent(lon)}`
-      );
+      const r = await fetch(`/api/weather?lat=${encodeURIComponent(lat)}&lon=${encodeURIComponent(lon)}`);
       if (!r.ok) throw new Error("Weather fetch failed");
 
       const data = await r.json();
       const c = data?.current;
       const m = data?.mapped;
 
-      const rawLine = `${m?.icon ?? ""} ${m?.label ?? "Weather"} • ${
-        c?.temperature_2m ?? "?"
-      }°C • wind ${c?.wind_speed_10m ?? "?"} km/h • precip ${
-        c?.precipitation ?? "?"
-      } mm`;
+      const rawLine = `${m?.icon ?? ""} ${m?.label ?? "Weather"} • ${c?.temperature_2m ?? "?"}°C • wind ${
+        c?.wind_speed_10m ?? "?"
+      } km/h • precip ${c?.precipitation ?? "?"} mm`;
 
       setWeatherSummary(rawLine);
+      dispatchAction({ type: "SET_WEATHER", text: rawLine });
 
       const updatedNarrative =
         narrative === "—"
           ? `Weather at time of report: ${rawLine}`
           : `${narrative}\nWeather at time of report: ${rawLine}`;
       setNarrative(updatedNarrative);
+      dispatchAction({ type: "SET_NARRATIVE", text: updatedNarrative });
 
       setMsgs((p) => [...p, { id: uid(), role: "ai", text: `Weather update: ${rawLine}` }]);
       await playTTS(`Weather update. ${rawLine}`, "assistant");
@@ -549,7 +583,7 @@ RULES:
         <div>
           <div className="text-sm font-medium">Assistant</div>
           <div className="text-xs text-zinc-400">
-            JSON Action Agent • STT • ElevenLabs Voice • Page: {activePage}
+            JSON Action Agent • STT (fallback-safe) • TTS • Page: {activePage}
           </div>
         </div>
 
@@ -573,33 +607,28 @@ RULES:
             title="OpenRouter model string e.g. openai/gpt-4o-mini"
           />
 
-          {/* TOP VOICE BUTTON = TTS on/off */}
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={() => setSpeak((v) => !v)}
-            title={speak ? "Disable voice" : "Enable voice"}
-          >
+          <Button variant="ghost" size="sm" onClick={() => setSpeak((v) => !v)} title={speak ? "Disable voice" : "Enable voice"}>
             {speak ? <Volume2 className="h-4 w-4" /> : <VolumeX className="h-4 w-4" />}
-            <span className="ml-2 hidden sm:inline">
-              {speak ? "Voice On" : "Voice Off"}
-            </span>
+            <span className="ml-2 hidden sm:inline">{speak ? "Voice On" : "Voice Off"}</span>
           </Button>
 
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={onGetWeather}
-            disabled={busy}
-            title="Get weather from your location"
-          >
+          <Button variant="ghost" size="sm" onClick={onGetWeather} disabled={busy} title="Get weather from your location">
             <CloudSun className="h-4 w-4" />
             <span className="ml-2 hidden sm:inline">Weather</span>
           </Button>
         </div>
       </div>
 
-      <div className="mt-4 flex-1 space-y-3 overflow-auto rounded-2xl bg-black/30 p-3 shadow-inner">
+      {/* Transcript + STT status (for demo credibility) */}
+      <div className="mt-3 rounded-2xl bg-black/25 p-3 text-xs text-zinc-200 ring-1 ring-white/5">
+        <div className="text-zinc-300/70">Heard</div>
+        <div className="mt-1 min-h-[18px]">
+          {lastTranscript ? <span className="text-zinc-100">{lastTranscript}</span> : <span className="text-zinc-400">—</span>}
+        </div>
+        {sttError ? <div className="mt-2 text-[11px] text-amber-300/80">{sttError}</div> : null}
+      </div>
+
+      <div className="mt-3 flex-1 space-y-3 overflow-auto rounded-2xl bg-black/30 p-3 shadow-inner">
         {list.map((m) => (
           <div
             key={m.id}
@@ -625,17 +654,9 @@ RULES:
 
       {/* BOTTOM VOICE BUTTON = RECORD/STT */}
       <div className="mt-3 flex items-center gap-2">
-        <Button
-          variant="ghost"
-          size="sm"
-          onClick={toggleRecording}
-          disabled={busy}
-          title={recording ? "Stop recording" : "Record voice"}
-        >
+        <Button variant="ghost" size="sm" onClick={toggleRecording} disabled={busy} title={recording ? "Stop recording" : "Record voice"}>
           {recording ? <Square className="h-4 w-4" /> : <Mic className="h-4 w-4" />}
-          <span className="ml-2 hidden sm:inline">
-            {recording ? `Recording ${recordSecs}s` : "Voice"}
-          </span>
+          <span className="ml-2 hidden sm:inline">{recording ? `Recording ${recordSecs}s` : "Voice"}</span>
         </Button>
 
         <input
