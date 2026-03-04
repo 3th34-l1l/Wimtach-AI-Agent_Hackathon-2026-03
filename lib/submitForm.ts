@@ -17,7 +17,7 @@ function withDemoDefaults(p: SubmitPayload) {
 
   // If env default is set server-side, we can omit "to" entirely,
   // but keeping it is fine for local/testing.
-  const demoTo = "Team10@EffectiveAI.net";
+  const demoTo = "Team00@EffectiveAI.net";
 
   const subject = p.subject?.trim() || `EMS FORM — ${p.formName} — DEMO — ${stamp}`;
 

@@ -25,27 +25,17 @@ function buildHtmlEmail(opts: {
   tagline: string;
   primary: string;
   website?: string;
+
   to: string;
   subject: string;
   formName: string;
   stamp: string;
+
   formData?: Record<string, any>;
   narrative?: string;
   bodyText?: string; // fallback if no structured data
 }) {
-  const {
-    companyName,
-    tagline,
-    primary,
-    website,
-    to,
-    subject,
-    formName,
-    stamp,
-    formData,
-    narrative,
-    bodyText,
-  } = opts;
+  const { companyName, tagline, primary, website, to, subject, formName, stamp, formData, narrative, bodyText } = opts;
 
   const websiteLine = website
     ? `<a href="${esc(website)}" style="color:${primary};text-decoration:none;">${esc(website)}</a>`
@@ -165,12 +155,11 @@ export async function POST(req: Request) {
   try {
     const payload = await req.json().catch(() => ({}));
 
-    // Backwards compatible fields:
+    // Backwards compatible fields
     const to = String(payload?.to ?? "").trim();
     const subject = String(payload?.subject ?? "").trim();
     const body = String(payload?.body ?? "").trim();
 
-    // Allow either body OR structured content:
     const hasStructured = Boolean(payload?.formData || payload?.narrative);
     if (!to || !subject || (!body && !hasStructured)) {
       return ok({
@@ -183,10 +172,9 @@ export async function POST(req: Request) {
     const port = Number(process.env.SMTP_PORT || 587);
     const user = String(process.env.SMTP_USER ?? "").trim();
 
-    // ✅ SUPPORT BOTH NAMES:
-    const pass = String(process.env.SMTP_PASS ?? process.env.SMTP_PASSWORD ?? "").trim();
+    // ✅ YOUR ENV uses SMTP_PASSWORD, so support BOTH:
+    const pass = String(process.env.SMTP_PASSWORD ?? process.env.SMTP_PASS ?? "").trim();
 
-    // sender email (From)
     const fromEnv = String(process.env.SMTP_FROM ?? user).trim();
 
     if (!host || !user || !pass) {
