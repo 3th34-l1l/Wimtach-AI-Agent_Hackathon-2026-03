@@ -21,8 +21,6 @@ function uid() {
 
 /**
  * JSON ACTION CONTRACT (matches your AppState reducer)
- * ✅ includes focusField + setFieldValue so inputs can be filled
- * ✅ includes confirm (append chat note)
  */
 type JsonAction = {
   say?: string;
@@ -35,11 +33,11 @@ type JsonAction = {
   setNarrative?: string;
   setWeatherSummary?: string;
 
-  // ✅ focus + fill
-  focusField?: string; // e.g. "occurrence.date"
-  setFieldValue?: { id: string; value: string }; // e.g. {id:"occurrence.callNumber", value:"2026-04125"}
+  // focus + fill
+  focusField?: string;
+  setFieldValue?: { id: string; value: string };
 
-  // ✅ confirmations
+  // confirmations
   confirm?: string;
 
   // shifts
@@ -106,16 +104,46 @@ function userWantsFormCompletion(text: string) {
     t.includes("do this form") ||
     t.includes("fill this") ||
     t.includes("finish this") ||
-    t.includes("complete this")
+    t.includes("complete this") ||
+    t.includes("start the form") ||
+    t.includes("start form")
   );
 }
 
-function firstFieldForActivePage(activePage: string) {
-  // must match your ids on pages
-  if (activePage === "occurrence") return "occurrence.date";
-  if (activePage === "teddy-bear") return "teddy.datetime";
-  // status/shift handled elsewhere; leave empty
+/** Map selectedForm string → internal workflow page key */
+function selectedFormToWorkflowPage(form?: string) {
+  const f = (form || "").toLowerCase();
+  if (f.includes("occurrence")) return "occurrence";
+  if (f.includes("teddy")) return "teddy-bear";
+  if (f.includes("shift")) return "shift";
+  if (f.includes("status") || f.includes("paramedic")) return "status";
   return "";
+}
+
+/** First field per workflow */
+function firstFieldForWorkflow(page: string) {
+  if (page === "occurrence") return "occurrence.date";
+  if (page === "teddy-bear") return "teddy.datetime";
+  if (page === "status") return "status.ACRc";
+  if (page === "shift") return "shift.upload";
+  return "";
+}
+
+/** Helpful “summary / next step” for demo polish */
+function workflowSummary(page: string) {
+  if (page === "occurrence") {
+    return "Occurrence Report selected. I’ll fill it one question at a time. First: what date/time did the incident occur?";
+  }
+  if (page === "teddy-bear") {
+    return "Teddy Bear Tracking selected. First: when was the bear given out (date/time)?";
+  }
+  if (page === "shift") {
+    return "Shift Report selected. First: what date is the shift for?";
+  }
+  if (page === "status") {
+    return "Paramedic Status selected. Tell me if any items are BAD, and I’ll help fix them quickly.";
+  }
+  return "Tell me what you want to do—Occurrence, Teddy Bear, Shift, or Status.";
 }
 
 export function ChatPanel() {
@@ -127,6 +155,7 @@ export function ChatPanel() {
   ]);
 
   const {
+    selectedForm,
     narrative,
     setWeatherSummary,
     setSelectedForm,
@@ -155,7 +184,7 @@ export function ChatPanel() {
   const canSend = input.trim().length > 0 && !busy;
   const list = useMemo(() => msgs, [msgs]);
 
-  /** ACTIVE PAGE */
+  /** ACTIVE PAGE from URL */
   const activePage = useMemo(() => {
     const p = (pathname || "").toLowerCase();
     if (p.includes("status")) return "status";
@@ -166,6 +195,24 @@ export function ChatPanel() {
     if (p.includes("chat")) return "chat";
     return "unknown";
   }, [pathname]);
+
+  /** WORKFLOW PAGE: on /chat, use selectedForm to know which form we’re completing */
+  const workflowPage = useMemo(() => {
+    if (activePage !== "chat") return activePage;
+    return selectedFormToWorkflowPage(selectedForm) || "chat";
+  }, [activePage, selectedForm]);
+
+  /** On workflow change, post a helpful summary message (demo polish, no LLM call) */
+  useEffect(() => {
+    if (!workflowPage || workflowPage === "unknown") return;
+    const summary = workflowSummary(workflowPage);
+    setMsgs((prev) => {
+      const last = prev[prev.length - 1]?.text || "";
+      if (last === summary) return prev;
+      return [...prev, { id: uid(), role: "ai", text: summary }];
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [workflowPage]);
 
   /** AUDIO UNLOCK (iOS) */
   const audioUnlockedRef = useRef(false);
@@ -194,7 +241,7 @@ export function ChatPanel() {
     if (!clean) return;
 
     try {
-      // ✅ important: stop mic before speaking (prevents “assistant voice” being transcribed)
+      // stop mic before speaking
       if (recording) stopRecording();
 
       const r = await fetch("/api/tts", {
@@ -232,40 +279,34 @@ export function ChatPanel() {
     return "assistant";
   }
 
-  /** APPLY JSON ACTIONS TO APPSTATE (single pass, no duplicates) */
+  /** APPLY JSON ACTIONS TO APPSTATE */
   function applyJsonAction(a: JsonAction) {
     if (!a) return;
 
-    // Form select (optional)
     if (typeof a.setSelectedForm === "string" && a.setSelectedForm.trim()) {
       const f = a.setSelectedForm.trim();
       setSelectedForm(f);
       dispatchAction({ type: "SET_SELECTED_FORM", form: f });
     }
 
-    // Weather
     if (typeof a.setWeatherSummary === "string") {
       setWeatherSummary(a.setWeatherSummary);
       dispatchAction({ type: "SET_WEATHER", text: a.setWeatherSummary });
     }
 
-    // Narrative
     if (typeof a.setNarrative === "string") {
       setNarrative(a.setNarrative);
       dispatchAction({ type: "SET_NARRATIVE", text: a.setNarrative });
     }
 
     if (typeof a.appendNarrative === "string" && a.appendNarrative.trim()) {
-      // In your app, APPEND_CHAT_NOTE also appends narrative, so use it.
       dispatchAction({ type: "APPEND_CHAT_NOTE", text: a.appendNarrative.trim() });
     }
 
-    // ✅ Focus highlight
     if (typeof a.focusField === "string" && a.focusField.trim()) {
       dispatchAction({ type: "SET_FOCUS_FIELD", id: a.focusField.trim() });
     }
 
-    // ✅ Field fill
     if (a.setFieldValue && typeof a.setFieldValue.id === "string") {
       dispatchAction({
         type: "SET_FIELD_VALUE",
@@ -274,17 +315,14 @@ export function ChatPanel() {
       });
     }
 
-    // ✅ Confirmation note
     if (typeof a.confirm === "string" && a.confirm.trim()) {
       dispatchAction({ type: "APPEND_CHAT_NOTE", text: `✅ ${a.confirm.trim()}` });
     }
 
-    // Shift schedule updates
     if (Array.isArray(a.setShiftSchedule)) {
       dispatchAction({ type: "SET_SHIFT_SCHEDULE", rows: a.setShiftSchedule });
     }
 
-    // Status updates
     if (a.status?.reset) {
       dispatchAction({ type: "PATCH_STATUS", patch: {} });
     }
@@ -309,54 +347,52 @@ export function ChatPanel() {
 
   /** LLM CALL */
   async function sendToLLM(nextMsgs: Msg[]) {
-    const firstField = firstFieldForActivePage(activePage);
+    const firstField = firstFieldForWorkflow(workflowPage);
 
     const system = `
 You are an EMS assistant that can update the app state by returning JSON.
 
-CURRENT PAGE: ${activePage}
+CURRENT PAGE: ${workflowPage}
 PATHNAME: ${pathname}
+SELECTED FORM: ${selectedForm ?? "—"}
 
-CRITICAL WORKFLOW RULE:
-If the user asks to complete/fill/finish the form that is CURRENTLY OPEN, start immediately.
-First action MUST be:
-{ "focusField": "${firstField}" }
-Then ask ONE short question for that field.
+ABSOLUTE RULES (DEMO CRITICAL):
+- If you return JSON, you MUST include a helpful "say" message.
+- If the user is completing a form, always focus one field and ask ONE short question.
+- Do NOT reply with generic text like "Updated". Be specific.
 
-When updating UI, return ONLY valid JSON with this schema:
+WORKFLOW:
+If the user asks to complete/fill/finish the CURRENT form, start immediately:
+1) Return JSON with { "focusField": "${firstField}", "say": "<ask the question for that field>" }
+2) When user answers, return JSON with:
+   - setFieldValue for the focused field
+   - confirm
+   - focusField for the next field
+   - say with the next question
 
+JSON schema you may return (ONLY JSON when updating UI):
 {
-  "say": "short message to show/speak",
+  "say": "short message/question to show and speak",
   "setSelectedForm": "Occurrence Report | Teddy Bear Tracking | Shift Report | Paramedic Status",
   "appendNarrative": "text to add",
   "setNarrative": "replace narrative",
   "setWeatherSummary": "replace weather summary",
-
   "focusField": "occurrence.date | teddy.datetime | ...",
   "setFieldValue": { "id": "occurrence.callNumber", "value": "..." },
-
   "confirm": "short confirmation to log",
-
-  "setShiftSchedule": [
-    {"date":"YYYY-MM-DD","start":"HH:MM","end":"HH:MM","unit":"...","team":"..."}
-  ],
-  "status": {
-    "set": [{"key":"ACRc","status":"GOOD"}],
-    "markAllGood": true,
-    "reset": true
-  }
+  "setShiftSchedule": [{"date":"YYYY-MM-DD","start":"HH:MM","end":"HH:MM","unit":"...","team":"..."}],
+  "status": {"set":[{"key":"ACRc","status":"GOOD"}], "markAllGood": true, "reset": true}
 }
 
-If the user is NOT asking for UI updates, you may answer normally (plain text).
+If you are NOT updating UI, answer normally (plain text) — but still be helpful.
 
 STATE SNAPSHOT:
 - narrative: ${narrative ?? "—"}
 - statusMap keys: ${Object.keys(statusMap ?? {}).join(", ") || "(none)"}
 - shiftSchedule rows: ${Array.isArray(shiftSchedule) ? shiftSchedule.length : 0}
 
-Demo tips:
-- Keep "say" short and practical.
-- Prefer pure JSON when updating UI (no code fences).
+FIRST FIELD FOR CURRENT WORKFLOW:
+${firstField || "(none) - if none, ask user which form to open"}
 `.trim();
 
     const llmMessages = [
@@ -387,6 +423,13 @@ Demo tips:
     return text || "(No response)";
   }
 
+  /** Start the workflow immediately (focus first field) */
+  function forceStartWorkflow(formName?: string) {
+    const page = selectedFormToWorkflowPage(formName || selectedForm) || workflowPage;
+    const ff = firstFieldForWorkflow(page);
+    if (ff) dispatchAction({ type: "SET_FOCUS_FIELD", id: ff });
+  }
+
   /** SEND TEXT */
   async function onSend() {
     const text = input.trim();
@@ -399,16 +442,18 @@ Demo tips:
     const next = [...msgs, userMsg];
     setMsgs(next);
 
-    // quick form hint (optional)
+    // Form selection hint
     const maybeForm = detectSelectedForm(text);
-    if (maybeForm) setSelectedForm(maybeForm);
+    if (maybeForm) {
+      setSelectedForm(maybeForm);
+      forceStartWorkflow(maybeForm);
+      // Also add an immediate helpful summary
+      setMsgs((p) => [...p, { id: uid(), role: "ai", text: workflowSummary(selectedFormToWorkflowPage(maybeForm)) }]);
+    }
 
-    // ✅ if user said “finish this form” AND we’re on a form page, force-start with focus immediately
+    // If user says “finish/complete/fill”, force start even if on /chat
     if (userWantsFormCompletion(text)) {
-      const ff = firstFieldForActivePage(activePage);
-      if (ff) {
-        dispatchAction({ type: "SET_FOCUS_FIELD", id: ff });
-      }
+      forceStartWorkflow();
     }
 
     try {
@@ -418,22 +463,26 @@ Demo tips:
       if (action) {
         applyJsonAction(action);
 
-        const say = String(action.say ?? "").trim() || "✅ Updated.";
-        setMsgs((p) => [...p, { id: uid(), role: "ai", text: say }]);
-        await playTTS(say, pickTTSMode(say));
+        const say = String(action.say ?? "").trim();
+        const confirm = String(action.confirm ?? "").trim();
+
+        // Never show generic "Updated"
+        const shown =
+          say ||
+          (confirm ? `✅ ${confirm}` : "") ||
+          "⚠️ Assistant returned JSON but no 'say'. Check the prompt / model output.";
+
+        setMsgs((p) => [...p, { id: uid(), role: "ai", text: shown }]);
+        await playTTS(shown, pickTTSMode(shown));
         return;
       }
 
       // plain text
-      setMsgs((p) => [...p, { id: uid(), role: "ai", text: aiRaw }]);
-
-      const mode = pickTTSMode(aiRaw);
-      await playTTS(aiRaw, mode);
+      const clean = aiRaw.trim() || "…";
+      setMsgs((p) => [...p, { id: uid(), role: "ai", text: clean }]);
+      await playTTS(clean, pickTTSMode(clean));
     } catch (e: any) {
-      setMsgs((p) => [
-        ...p,
-        { id: uid(), role: "ai", text: `⚠️ Error: ${e?.message || "Failed to reach AI."}` },
-      ]);
+      setMsgs((p) => [...p, { id: uid(), role: "ai", text: `⚠️ Error: ${e?.message || "Failed to reach AI."}` }]);
     } finally {
       setBusy(false);
     }
@@ -525,28 +574,34 @@ Demo tips:
             return;
           }
 
-          // inject transcript as user msg
           const userMsg: Msg = { id: uid(), role: "user", text: transcript };
           const next = [...msgs, userMsg];
           setMsgs(next);
 
           const maybeForm = detectSelectedForm(transcript);
-          if (maybeForm) setSelectedForm(maybeForm);
+          if (maybeForm) {
+            setSelectedForm(maybeForm);
+            forceStartWorkflow(maybeForm);
+            setMsgs((p) => [...p, { id: uid(), role: "ai", text: workflowSummary(selectedFormToWorkflowPage(maybeForm)) }]);
+          }
 
-          // same “start immediately” rule for voice
           if (userWantsFormCompletion(transcript)) {
-            const ff = firstFieldForActivePage(activePage);
-            if (ff) dispatchAction({ type: "SET_FOCUS_FIELD", id: ff });
+            forceStartWorkflow();
           }
 
           const aiRaw = await sendToLLM(next);
-
           const action = safeParseJson(aiRaw);
+
           if (action) {
             applyJsonAction(action);
-            const say = String(action.say ?? "").trim() || "✅ Updated.";
-            setMsgs((p) => [...p, { id: uid(), role: "ai", text: say }]);
-            await playTTS(say, pickTTSMode(say));
+            const say = String(action.say ?? "").trim();
+            const confirm = String(action.confirm ?? "").trim();
+            const shown =
+              say ||
+              (confirm ? `✅ ${confirm}` : "") ||
+              "⚠️ Assistant returned JSON but no 'say'. Check the prompt / model output.";
+            setMsgs((p) => [...p, { id: uid(), role: "ai", text: shown }]);
+            await playTTS(shown, pickTTSMode(shown));
             return;
           }
 
@@ -605,10 +660,7 @@ Demo tips:
       setMsgs((p) => [...p, { id: uid(), role: "ai", text: `Weather update: ${rawLine}` }]);
       await playTTS(`Weather update. ${rawLine}`, "assistant");
     } catch (e: any) {
-      setMsgs((p) => [
-        ...p,
-        { id: uid(), role: "ai", text: `⚠️ Weather error: ${e?.message || "Unable to access location."}` },
-      ]);
+      setMsgs((p) => [...p, { id: uid(), role: "ai", text: `⚠️ Weather error: ${e?.message || "Unable to access location."}` }]);
     } finally {
       setBusy(false);
     }
@@ -620,7 +672,10 @@ Demo tips:
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <div className="text-sm font-medium">Assistant</div>
-          <div className="text-xs text-zinc-400">JSON Action Agent • STT (fallback-safe) • TTS • Page: {activePage}</div>
+          <div className="text-xs text-zinc-400">
+            JSON Action Agent • STT (fallback-safe) • TTS • Page: {activePage}
+            {activePage === "chat" && selectedForm ? ` • Workflow: ${workflowPage}` : ""}
+          </div>
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
@@ -643,12 +698,7 @@ Demo tips:
             title="OpenRouter model string e.g. openai/gpt-4o-mini"
           />
 
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={() => setSpeak((v) => !v)}
-            title={speak ? "Disable voice" : "Enable voice"}
-          >
+          <Button variant="ghost" size="sm" onClick={() => setSpeak((v) => !v)} title={speak ? "Disable voice" : "Enable voice"}>
             {speak ? <Volume2 className="h-4 w-4" /> : <VolumeX className="h-4 w-4" />}
             <span className="ml-2 hidden sm:inline">{speak ? "Voice On" : "Voice Off"}</span>
           </Button>
@@ -693,13 +743,7 @@ Demo tips:
       </div>
 
       <div className="mt-3 flex items-center gap-2">
-        <Button
-          variant="ghost"
-          size="sm"
-          onClick={toggleRecording}
-          disabled={busy}
-          title={recording ? "Stop recording" : "Record voice"}
-        >
+        <Button variant="ghost" size="sm" onClick={toggleRecording} disabled={busy} title={recording ? "Stop recording" : "Record voice"}>
           {recording ? <Square className="h-4 w-4" /> : <Mic className="h-4 w-4" />}
           <span className="ml-2 hidden sm:inline">{recording ? `Recording ${recordSecs}s` : "Voice"}</span>
         </Button>
