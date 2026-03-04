@@ -20,23 +20,32 @@ function uid() {
 }
 
 /**
- * JSON ACTION CONTRACT (matches your AppState)
- * - We ONLY use actions your AppState can handle:
- *   SET_SELECTED_FORM, SET_WEATHER, SET_NARRATIVE, PATCH_STATUS, SET_SHIFT_SCHEDULE, APPEND_CHAT_NOTE
+ * JSON ACTION CONTRACT (matches your AppState reducer)
+ * ✅ includes focusField + setFieldValue so inputs can be filled
+ * ✅ includes confirm (append chat note)
  */
 type JsonAction = {
   say?: string;
+
+  // navigation-ish
   setSelectedForm?: string;
+
+  // summaries
   appendNarrative?: string;
   setNarrative?: string;
   setWeatherSummary?: string;
 
+  // ✅ focus + fill
+  focusField?: string; // e.g. "occurrence.date"
+  setFieldValue?: { id: string; value: string }; // e.g. {id:"occurrence.callNumber", value:"2026-04125"}
 
-  // ✅ ADD THESE:
-  focusField?: string;
+  // ✅ confirmations
   confirm?: string;
-  // NEW: allow shift schedule updates
+
+  // shifts
   setShiftSchedule?: Array<{ date?: string; start?: string; end?: string; unit?: string; team?: string }>;
+
+  // status
   status?: {
     set?: { key: string; status: "GOOD" | "BAD" }[];
     markAllGood?: boolean;
@@ -78,16 +87,43 @@ function safeParseJson(text: string): JsonAction | null {
   return null;
 }
 
+function detectSelectedForm(text: string) {
+  const t = text.toLowerCase();
+  if (t.includes("occurrence")) return "Occurrence Report";
+  if (t.includes("teddy") || t.includes("bear")) return "Teddy Bear Tracking";
+  if (t.includes("shift")) return "Shift Report";
+  if (t.includes("status") || t.includes("checklist")) return "Paramedic Status";
+  return null;
+}
+
+function userWantsFormCompletion(text: string) {
+  const t = text.toLowerCase();
+  return (
+    t.includes("finish") ||
+    t.includes("complete") ||
+    t.includes("fill") ||
+    t.includes("do the form") ||
+    t.includes("do this form") ||
+    t.includes("fill this") ||
+    t.includes("finish this") ||
+    t.includes("complete this")
+  );
+}
+
+function firstFieldForActivePage(activePage: string) {
+  // must match your ids on pages
+  if (activePage === "occurrence") return "occurrence.date";
+  if (activePage === "teddy-bear") return "teddy.datetime";
+  // status/shift handled elsewhere; leave empty
+  return "";
+}
+
 export function ChatPanel() {
   const pathname = usePathname();
 
   const [input, setInput] = useState("");
   const [msgs, setMsgs] = useState<Msg[]>([
-    {
-      id: "1",
-      role: "ai",
-      text: "Hi! What would you like to do—Occurrence, Teddy Bear, Shift, or Status?",
-    },
+    { id: "1", role: "ai", text: "Hi! What would you like to do—Occurrence, Teddy Bear, Shift, or Status?" },
   ]);
 
   const {
@@ -96,6 +132,7 @@ export function ChatPanel() {
     setSelectedForm,
     setNarrative,
     statusMap,
+    shiftSchedule,
     dispatchAction,
   } = useAppState();
 
@@ -118,9 +155,7 @@ export function ChatPanel() {
   const canSend = input.trim().length > 0 && !busy;
   const list = useMemo(() => msgs, [msgs]);
 
-  /** -----------------------------------------
-   * ACTIVE PAGE (reliable, handles route variations)
-   * ----------------------------------------- */
+  /** ACTIVE PAGE */
   const activePage = useMemo(() => {
     const p = (pathname || "").toLowerCase();
     if (p.includes("status")) return "status";
@@ -132,11 +167,8 @@ export function ChatPanel() {
     return "unknown";
   }, [pathname]);
 
-  /** -----------------------------------------
-   * AUDIO UNLOCK (helps iOS)
-   * ----------------------------------------- */
+  /** AUDIO UNLOCK (iOS) */
   const audioUnlockedRef = useRef(false);
-
   useEffect(() => {
     const unlock = async () => {
       if (audioUnlockedRef.current) return;
@@ -146,17 +178,15 @@ export function ChatPanel() {
         await a.play().catch(() => {});
       } catch {}
     };
-
     window.addEventListener("click", unlock, { once: true });
     window.addEventListener("touchstart", unlock, { once: true });
-
     return () => {
       window.removeEventListener("click", unlock);
       window.removeEventListener("touchstart", unlock);
     };
   }, []);
 
-  /** ---------------- TTS ---------------- */
+  /** TTS */
   async function playTTS(text: string, mode: TTSMode = "assistant") {
     if (!speak) return;
 
@@ -164,20 +194,17 @@ export function ChatPanel() {
     if (!clean) return;
 
     try {
+      // ✅ important: stop mic before speaking (prevents “assistant voice” being transcribed)
+      if (recording) stopRecording();
+
       const r = await fetch("/api/tts", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ text: clean, mode }),
       });
 
-      // Demo-safe: if server returns 204 (no audio), just skip
       if (r.status === 204) return;
-
-      if (!r.ok) {
-        const err = await r.text().catch(() => "");
-        console.warn("TTS failed:", r.status, err);
-        return;
-      }
+      if (!r.ok) return;
 
       const blob = await r.blob();
       if (!blob || blob.size === 0) return;
@@ -191,9 +218,10 @@ export function ChatPanel() {
 
       const a = new Audio(url);
       audioRef.current = a;
+      a.onended = () => URL.revokeObjectURL(url);
       await a.play();
-    } catch (e) {
-      console.warn("Audio play error:", e);
+    } catch {
+      // ignore autoplay issues
     }
   }
 
@@ -204,68 +232,59 @@ export function ChatPanel() {
     return "assistant";
   }
 
-  /** ---------------- Form detection (fallback) ---------------- */
-  function detectSelectedForm(text: string) {
-    const t = text.toLowerCase();
-    if (t.includes("occurrence")) return "Occurrence Report";
-    if (t.includes("teddy") || t.includes("bear")) return "Teddy Bear Tracking";
-    if (t.includes("shift")) return "Shift Report";
-    if (t.includes("status") || t.includes("checklist")) return "Paramedic Status";
-    return null;
-  }
-
-  /** ---------------- APPLY JSON ACTIONS TO APPSTATE ---------------- */
+  /** APPLY JSON ACTIONS TO APPSTATE (single pass, no duplicates) */
   function applyJsonAction(a: JsonAction) {
-      if (!a) return;
+    if (!a) return;
 
-  // 1) form routing
-  if (a.setSelectedForm) setSelectedForm(String(a.setSelectedForm));
-
-  // 2) narrative/weather
-  if (typeof a.setWeatherSummary === "string") setWeatherSummary(a.setWeatherSummary);
-  if (typeof a.setNarrative === "string") setNarrative(a.setNarrative);
-
-  if (typeof a.appendNarrative === "string" && a.appendNarrative.trim()) {
-    const next =
-      narrative && narrative !== "—"
-        ? `${narrative}\n\n${a.appendNarrative.trim()}`
-        : a.appendNarrative.trim();
-    setNarrative(next);
-  }
-  // ✅ NEW (10 lines total effect): highlight + confirmation
-  if (typeof a.focusField === "string") {
-    dispatchAction({ type: "SET_FOCUS_FIELD", id: a.focusField });
-  }
-  if (typeof a.confirm === "string" && a.confirm.trim()) {
-    dispatchAction({ type: "APPEND_CHAT_NOTE", text: `✅ ${a.confirm.trim()}` });
-  }
-
-
-    if (a.setSelectedForm) {
-      setSelectedForm(String(a.setSelectedForm));
-      dispatchAction({ type: "SET_SELECTED_FORM", form: String(a.setSelectedForm) });
+    // Form select (optional)
+    if (typeof a.setSelectedForm === "string" && a.setSelectedForm.trim()) {
+      const f = a.setSelectedForm.trim();
+      setSelectedForm(f);
+      dispatchAction({ type: "SET_SELECTED_FORM", form: f });
     }
 
+    // Weather
     if (typeof a.setWeatherSummary === "string") {
       setWeatherSummary(a.setWeatherSummary);
       dispatchAction({ type: "SET_WEATHER", text: a.setWeatherSummary });
     }
 
+    // Narrative
     if (typeof a.setNarrative === "string") {
       setNarrative(a.setNarrative);
       dispatchAction({ type: "SET_NARRATIVE", text: a.setNarrative });
     }
 
     if (typeof a.appendNarrative === "string" && a.appendNarrative.trim()) {
+      // In your app, APPEND_CHAT_NOTE also appends narrative, so use it.
       dispatchAction({ type: "APPEND_CHAT_NOTE", text: a.appendNarrative.trim() });
     }
 
-    // Shift schedule updates (Phase 3 demo)
+    // ✅ Focus highlight
+    if (typeof a.focusField === "string" && a.focusField.trim()) {
+      dispatchAction({ type: "SET_FOCUS_FIELD", id: a.focusField.trim() });
+    }
+
+    // ✅ Field fill
+    if (a.setFieldValue && typeof a.setFieldValue.id === "string") {
+      dispatchAction({
+        type: "SET_FIELD_VALUE",
+        id: a.setFieldValue.id,
+        value: String(a.setFieldValue.value ?? ""),
+      });
+    }
+
+    // ✅ Confirmation note
+    if (typeof a.confirm === "string" && a.confirm.trim()) {
+      dispatchAction({ type: "APPEND_CHAT_NOTE", text: `✅ ${a.confirm.trim()}` });
+    }
+
+    // Shift schedule updates
     if (Array.isArray(a.setShiftSchedule)) {
       dispatchAction({ type: "SET_SHIFT_SCHEDULE", rows: a.setShiftSchedule });
     }
 
-    // Status updates (Form 4) — your AppState supports PATCH_STATUS only
+    // Status updates
     if (a.status?.reset) {
       dispatchAction({ type: "PATCH_STATUS", patch: {} });
     }
@@ -288,22 +307,36 @@ export function ChatPanel() {
     }
   }
 
-  /** ---------------- LLM CALL (JSON action agent) ---------------- */
+  /** LLM CALL */
   async function sendToLLM(nextMsgs: Msg[]) {
+    const firstField = firstFieldForActivePage(activePage);
+
     const system = `
-You are an EMS assistant that can update the app state.
+You are an EMS assistant that can update the app state by returning JSON.
 
 CURRENT PAGE: ${activePage}
 PATHNAME: ${pathname}
 
-If the user is asking to UPDATE/FILL/CHANGE anything in the UI, respond ONLY as valid JSON with this schema:
+CRITICAL WORKFLOW RULE:
+If the user asks to complete/fill/finish the form that is CURRENTLY OPEN, start immediately.
+First action MUST be:
+{ "focusField": "${firstField}" }
+Then ask ONE short question for that field.
+
+When updating UI, return ONLY valid JSON with this schema:
 
 {
   "say": "short message to show/speak",
   "setSelectedForm": "Occurrence Report | Teddy Bear Tracking | Shift Report | Paramedic Status",
-  "appendNarrative": "text to add to narrative",
+  "appendNarrative": "text to add",
   "setNarrative": "replace narrative",
   "setWeatherSummary": "replace weather summary",
+
+  "focusField": "occurrence.date | teddy.datetime | ...",
+  "setFieldValue": { "id": "occurrence.callNumber", "value": "..." },
+
+  "confirm": "short confirmation to log",
+
   "setShiftSchedule": [
     {"date":"YYYY-MM-DD","start":"HH:MM","end":"HH:MM","unit":"...","team":"..."}
   ],
@@ -314,10 +347,14 @@ If the user is asking to UPDATE/FILL/CHANGE anything in the UI, respond ONLY as 
   }
 }
 
-If the user is NOT asking for UI updates (just asking questions), you may answer normally (plain text).
+If the user is NOT asking for UI updates, you may answer normally (plain text).
+
+STATE SNAPSHOT:
+- narrative: ${narrative ?? "—"}
+- statusMap keys: ${Object.keys(statusMap ?? {}).join(", ") || "(none)"}
+- shiftSchedule rows: ${Array.isArray(shiftSchedule) ? shiftSchedule.length : 0}
 
 Demo tips:
-- For Shift swap/proposed change requests: put the request into appendNarrative and setSelectedForm to "Shift Report".
 - Keep "say" short and practical.
 - Prefer pure JSON when updating UI (no code fences).
 `.trim();
@@ -345,12 +382,12 @@ Demo tips:
       throw new Error(errText || `LLM request failed (${r.status})`);
     }
 
-    const data = await r.json();
+    const data = await r.json().catch(() => ({}));
     const text = String(data?.text ?? "").trim();
     return text || "(No response)";
   }
 
-  /** ---------------- SEND TEXT (main) ---------------- */
+  /** SEND TEXT */
   async function onSend() {
     const text = input.trim();
     if (!text || busy) return;
@@ -358,12 +395,21 @@ Demo tips:
     setBusy(true);
     setInput("");
 
-    const maybeForm = detectSelectedForm(text);
-    if (maybeForm) setSelectedForm(maybeForm);
-
     const userMsg: Msg = { id: uid(), role: "user", text };
     const next = [...msgs, userMsg];
     setMsgs(next);
+
+    // quick form hint (optional)
+    const maybeForm = detectSelectedForm(text);
+    if (maybeForm) setSelectedForm(maybeForm);
+
+    // ✅ if user said “finish this form” AND we’re on a form page, force-start with focus immediately
+    if (userWantsFormCompletion(text)) {
+      const ff = firstFieldForActivePage(activePage);
+      if (ff) {
+        dispatchAction({ type: "SET_FOCUS_FIELD", id: ff });
+      }
+    }
 
     try {
       const aiRaw = await sendToLLM(next);
@@ -378,27 +424,22 @@ Demo tips:
         return;
       }
 
+      // plain text
       setMsgs((p) => [...p, { id: uid(), role: "ai", text: aiRaw }]);
 
       const mode = pickTTSMode(aiRaw);
-      if (mode === "scribe") {
-        const trimmed = aiRaw.replace(/^summary:\s*/i, "").trim();
-        if (trimmed) {
-          const updated = narrative === "—" ? trimmed : `${narrative}\n\n${trimmed}`;
-          setNarrative(updated);
-          dispatchAction({ type: "SET_NARRATIVE", text: updated });
-        }
-      }
-
       await playTTS(aiRaw, mode);
     } catch (e: any) {
-      setMsgs((p) => [...p, { id: uid(), role: "ai", text: `⚠️ Error: ${e?.message || "Failed to reach AI."}` }]);
+      setMsgs((p) => [
+        ...p,
+        { id: uid(), role: "ai", text: `⚠️ Error: ${e?.message || "Failed to reach AI."}` },
+      ]);
     } finally {
       setBusy(false);
     }
   }
 
-  /** ---------------- VOICE RECORDING (fallback-proof) ---------------- */
+  /** VOICE RECORDING */
   function stopRecording() {
     try {
       if (recordTimerRef.current) {
@@ -426,7 +467,6 @@ Demo tips:
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
 
-      // iOS/Safari prefers mp4/m4a when supported
       const mimeCandidates = ["audio/mp4", "audio/webm;codecs=opus", "audio/webm"];
       const mimeType = mimeCandidates.find((m) => MediaRecorder.isTypeSupported(m)) || "";
 
@@ -465,13 +505,13 @@ Demo tips:
 
           const mt = mr.mimeType || blob.type || "";
           const ext = mt.includes("mp4") ? "m4a" : mt.includes("wav") ? "wav" : "webm";
+
           const formData = new FormData();
           formData.append("file", blob, `voice.${ext}`);
 
           const sttRes = await fetch("/api/stt", { method: "POST", body: formData });
-
-          // Our fallback-proof /api/stt returns 200 even on failure.
           const stt = await sttRes.json().catch(() => ({}));
+
           const ok = Boolean(stt?.ok);
           const transcript = String(stt?.text ?? "").trim();
           const err = String(stt?.error ?? "").trim();
@@ -480,21 +520,24 @@ Demo tips:
           setSttError(ok ? "" : err || "STT failed");
 
           if (!ok || !transcript) {
-            const msg =
-              `⚠️ Couldn’t transcribe.` +
-              (err ? ` (${err})` : "") +
-              ` Try again or type your message.`;
+            const msg = `⚠️ Couldn’t transcribe.${err ? ` (${err})` : ""} Try again or type your message.`;
             setMsgs((p) => [...p, { id: uid(), role: "ai", text: msg }]);
             return;
           }
 
-          // Put transcript into chat and send
+          // inject transcript as user msg
           const userMsg: Msg = { id: uid(), role: "user", text: transcript };
           const next = [...msgs, userMsg];
           setMsgs(next);
 
           const maybeForm = detectSelectedForm(transcript);
           if (maybeForm) setSelectedForm(maybeForm);
+
+          // same “start immediately” rule for voice
+          if (userWantsFormCompletion(transcript)) {
+            const ff = firstFieldForActivePage(activePage);
+            if (ff) dispatchAction({ type: "SET_FOCUS_FIELD", id: ff });
+          }
 
           const aiRaw = await sendToLLM(next);
 
@@ -516,31 +559,25 @@ Demo tips:
         }
       };
 
-      // More reliable chunking on mobile
       mr.start(250);
       setRecording(true);
 
       setRecordSecs(0);
-      recordTimerRef.current = window.setInterval(() => {
-        setRecordSecs((s) => s + 1);
-      }, 1000) as unknown as number;
+      recordTimerRef.current = window.setInterval(() => setRecordSecs((s) => s + 1), 1000) as unknown as number;
     } catch (e: any) {
       setMsgs((p) => [...p, { id: uid(), role: "ai", text: `⚠️ Mic permission error: ${e?.message || "Denied."}` }]);
       setRecording(false);
     }
   }
 
-  /** ---------------- WEATHER ---------------- */
+  /** WEATHER */
   async function onGetWeather() {
     if (busy) return;
     setBusy(true);
 
     try {
       const pos = await new Promise<GeolocationPosition>((resolve, reject) => {
-        navigator.geolocation.getCurrentPosition(resolve, reject, {
-          enableHighAccuracy: true,
-          timeout: 9000,
-        });
+        navigator.geolocation.getCurrentPosition(resolve, reject, { enableHighAccuracy: true, timeout: 9000 });
       });
 
       const lat = pos.coords.latitude;
@@ -549,7 +586,7 @@ Demo tips:
       const r = await fetch(`/api/weather?lat=${encodeURIComponent(lat)}&lon=${encodeURIComponent(lon)}`);
       if (!r.ok) throw new Error("Weather fetch failed");
 
-      const data = await r.json();
+      const data = await r.json().catch(() => ({}));
       const c = data?.current;
       const m = data?.mapped;
 
@@ -561,30 +598,29 @@ Demo tips:
       dispatchAction({ type: "SET_WEATHER", text: rawLine });
 
       const updatedNarrative =
-        narrative === "—"
-          ? `Weather at time of report: ${rawLine}`
-          : `${narrative}\nWeather at time of report: ${rawLine}`;
+        narrative === "—" ? `Weather at time of report: ${rawLine}` : `${narrative}\nWeather at time of report: ${rawLine}`;
       setNarrative(updatedNarrative);
       dispatchAction({ type: "SET_NARRATIVE", text: updatedNarrative });
 
       setMsgs((p) => [...p, { id: uid(), role: "ai", text: `Weather update: ${rawLine}` }]);
       await playTTS(`Weather update. ${rawLine}`, "assistant");
     } catch (e: any) {
-      setMsgs((p) => [...p, { id: uid(), role: "ai", text: `⚠️ Weather error: ${e?.message || "Unable to access location."}` }]);
+      setMsgs((p) => [
+        ...p,
+        { id: uid(), role: "ai", text: `⚠️ Weather error: ${e?.message || "Unable to access location."}` },
+      ]);
     } finally {
       setBusy(false);
     }
   }
 
-  /** ---------------- UI ---------------- */
+  /** UI */
   return (
     <Card className="flex h-[70dvh] flex-col">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <div className="text-sm font-medium">Assistant</div>
-          <div className="text-xs text-zinc-400">
-            JSON Action Agent • STT (fallback-safe) • TTS • Page: {activePage}
-          </div>
+          <div className="text-xs text-zinc-400">JSON Action Agent • STT (fallback-safe) • TTS • Page: {activePage}</div>
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
@@ -607,7 +643,12 @@ Demo tips:
             title="OpenRouter model string e.g. openai/gpt-4o-mini"
           />
 
-          <Button variant="ghost" size="sm" onClick={() => setSpeak((v) => !v)} title={speak ? "Disable voice" : "Enable voice"}>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => setSpeak((v) => !v)}
+            title={speak ? "Disable voice" : "Enable voice"}
+          >
             {speak ? <Volume2 className="h-4 w-4" /> : <VolumeX className="h-4 w-4" />}
             <span className="ml-2 hidden sm:inline">{speak ? "Voice On" : "Voice Off"}</span>
           </Button>
@@ -619,7 +660,6 @@ Demo tips:
         </div>
       </div>
 
-      {/* Transcript + STT status (for demo credibility) */}
       <div className="mt-3 rounded-2xl bg-black/25 p-3 text-xs text-zinc-200 ring-1 ring-white/5">
         <div className="text-zinc-300/70">Heard</div>
         <div className="mt-1 min-h-[18px]">
@@ -652,9 +692,14 @@ Demo tips:
         )}
       </div>
 
-      {/* BOTTOM VOICE BUTTON = RECORD/STT */}
       <div className="mt-3 flex items-center gap-2">
-        <Button variant="ghost" size="sm" onClick={toggleRecording} disabled={busy} title={recording ? "Stop recording" : "Record voice"}>
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={toggleRecording}
+          disabled={busy}
+          title={recording ? "Stop recording" : "Record voice"}
+        >
           {recording ? <Square className="h-4 w-4" /> : <Mic className="h-4 w-4" />}
           <span className="ml-2 hidden sm:inline">{recording ? `Recording ${recordSecs}s` : "Voice"}</span>
         </Button>

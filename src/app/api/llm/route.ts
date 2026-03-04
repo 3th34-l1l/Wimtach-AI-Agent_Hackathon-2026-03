@@ -4,7 +4,8 @@ FULL DROP-IN (demo-safe)
 ✅ Provider flow: AUTO = OpenRouter → OpenAI fallback
 ✅ Always returns 200 JSON (never hard-crashes UI)
 ✅ Keeps OpenRouter required headers (Referer + Title)
-✅ Clears up “Read this page aloud” failures when OR key is wrong
+✅ IMPORTANT: merges UI/system prompt into ONE system message
+   so "start workflow immediately" + JSON contracts always work
 =========================== */
 
 import { NextResponse } from "next/server";
@@ -55,6 +56,10 @@ Rules:
 const SYSTEM_DEFAULT = `
 You are an EMS assistant helping paramedics complete forms quickly.
 Ask short structured questions, confirm key values, and summarize.
+
+IMPORTANT:
+- If the UI/system prompt includes a JSON schema or workflow rules, follow them exactly.
+- Prefer concise, actionable steps.
 `.trim();
 
 /* -----------------------
@@ -96,7 +101,7 @@ function systemFor(mode: Mode) {
 }
 
 /* -----------------------
-   Provider calls
+   Providers
 ------------------------ */
 
 async function callOpenRouter(messages: Msg[], modelOverride?: string) {
@@ -110,7 +115,6 @@ async function callOpenRouter(messages: Msg[], modelOverride?: string) {
     headers: {
       Authorization: `Bearer ${key}`,
       "Content-Type": "application/json",
-      // Required / recommended for some OpenRouter keys
       "HTTP-Referer": process.env.OPENROUTER_REFERER || "http://localhost:3000",
       "X-Title": process.env.OPENROUTER_APP_TITLE || "EMS AI Demo",
     },
@@ -149,12 +153,11 @@ async function callOpenAI(messages: Msg[], modelOverride?: string) {
 ------------------------ */
 
 function okJson(payload: any) {
-  // Demo-safe: ALWAYS return JSON 200 so UI never hard-crashes
   return NextResponse.json(payload, { status: 200 });
 }
 
 /* -----------------------
-   Main handler
+   Main Handler
 ------------------------ */
 
 export async function POST(req: Request) {
@@ -170,10 +173,24 @@ export async function POST(req: Request) {
     }
 
     const mode = detectMode(userMessages);
-    const system = systemFor(mode);
+    const agentSystem = systemFor(mode);
 
-    // Final message list: agent system + conversation
-    const messages: Msg[] = [{ role: "system", content: system }, ...userMessages];
+    /**
+     * ✅ KEY FIX:
+     * If the client already provided a system message (ChatPanel/VoiceAssistant),
+     * MERGE it into ONE system prompt so workflow rules + JSON schema always win.
+     */
+    const first = userMessages[0];
+    const hasClientSystem = first?.role === "system" && typeof first.content === "string";
+
+    const mergedSystem = hasClientSystem
+      ? `${agentSystem}\n\n---\nUI / APP CONTRACT (MUST FOLLOW):\n${first.content.trim()}`
+      : agentSystem;
+
+    const messages: Msg[] = [
+      { role: "system", content: mergedSystem },
+      ...(hasClientSystem ? userMessages.slice(1) : userMessages),
+    ];
 
     // Forced OpenRouter
     if (provider === "openrouter") {
@@ -207,7 +224,7 @@ export async function POST(req: Request) {
       }
     }
 
-    // AUTO: OpenRouter → OpenAI fallback
+    // AUTO: OpenRouter → fallback OpenAI
     try {
       const text = await callOpenRouter(messages, modelOverride);
       return okJson({ ok: true, provider: "openrouter", mode, text });
