@@ -1,9 +1,3 @@
-/*
-===========================
-FILE: /app/forms/teddy-bear/page.tsx
-Form 2 UI (Construction quick-switch intake + AI preview)
-===========================
-*/
 "use client";
 
 import { useMemo, useState } from "react";
@@ -14,13 +8,7 @@ import { Select } from "@/src/app/components/ui/Select";
 import { Button } from "@/src/app/components/ui/Button";
 import { useAppState } from "@/src/app/components/state/AppState";
 
-type FormMode =
-  | "tools"
-  | "hazard"
-  | "pretask"
-  | "ppe"
-  | "incident";
-
+type FormMode = "tools" | "hazard" | "pretask" | "ppe" | "incident";
 type AiMode = "idle" | "loading" | "done";
 
 const MODES: { key: FormMode; label: string; subtitle: string }[] = [
@@ -53,21 +41,29 @@ const MODES: { key: FormMode; label: string; subtitle: string }[] = [
 
 const ENDPOINT = "/api/llm";
 
+type FormBinder = {
+  v: (id: string) => string;
+  s: (id: string) => (val: string) => void;
+};
+
 export default function TeddyBearFormPage() {
-  const { dispatchAction, getFieldValue } = useAppState();
+  const { dispatchAction, getFieldValue, setFieldValue } = useAppState();
   const [mode, setMode] = useState<FormMode>("tools");
   const [aiMode, setAiMode] = useState<AiMode>("idle");
   const [aiText, setAiText] = useState("");
   const [aiError, setAiError] = useState("");
 
-  const prefix = `form2.${mode}` as const;
+  const prefix = `teddy.${mode}` as const;
+
+  const v = (id: string) => getFieldValue(id);
+  const s = (id: string) => (val: string) => setFieldValue(id, val);
 
   const title = useMemo(() => {
     return MODES.find((m) => m.key === mode) || MODES[0];
   }, [mode]);
 
   function collectFormValues(modeKey: FormMode): Record<string, string> {
-    const p = `form2.${modeKey}`;
+    const p = `teddy.${modeKey}`;
 
     if (modeKey === "tools") {
       return {
@@ -130,7 +126,7 @@ export default function TeddyBearFormPage() {
     };
   }
 
-  function makeSystemPrompt(modeKey: FormMode) {
+  function makeSystemPrompt() {
     return `
 You are a construction safety intake assistant.
 
@@ -177,7 +173,7 @@ Generate an AI preview for this intake.
         body: JSON.stringify({
           provider: "auto",
           messages: [
-            { role: "system", content: makeSystemPrompt(mode) },
+            { role: "system", content: makeSystemPrompt() },
             { role: "user", content: makeUserPrompt(mode, values) },
           ],
         }),
@@ -244,19 +240,24 @@ Generate an AI preview for this intake.
 
         <div className="grid gap-4 lg:grid-cols-2">
           <Card>
-            {mode === "tools" ? <ToolsForm prefix={prefix} /> : null}
-            {mode === "hazard" ? <HazardForm prefix={prefix} /> : null}
-            {mode === "pretask" ? <PreTaskForm prefix={prefix} /> : null}
-            {mode === "ppe" ? <PPEForm prefix={prefix} /> : null}
-            {mode === "incident" ? <IncidentForm prefix={prefix} /> : null}
+            {mode === "tools" ? <ToolsForm prefix={prefix} v={v} s={s} /> : null}
+            {mode === "hazard" ? <HazardForm prefix={prefix} v={v} s={s} /> : null}
+            {mode === "pretask" ? <PreTaskForm prefix={prefix} v={v} s={s} /> : null}
+            {mode === "ppe" ? <PPEForm prefix={prefix} v={v} s={s} /> : null}
+            {mode === "incident" ? <IncidentForm prefix={prefix} v={v} s={s} /> : null}
 
             <div className="mt-6 flex flex-col gap-2 sm:flex-row sm:justify-end">
               <Button
-            variant="ghost"
-            onClick={() => dispatchAction({ type: "CLEAR_FORM", form: "teddy" as any })}
-          >
-            Clear
-          </Button>
+                variant="ghost"
+                onClick={() => {
+                  dispatchAction({ type: "CLEAR_FORM", form: "teddy" });
+                  setAiMode("idle");
+                  setAiText("");
+                  setAiError("");
+                }}
+              >
+                Clear
+              </Button>
               <Button variant="primary" onClick={generateAiPreview}>
                 {aiMode === "loading" ? "Generating..." : "Generate AI Preview"}
               </Button>
@@ -387,7 +388,15 @@ Generate an AI preview for this intake.
   );
 }
 
-function ToolsForm({ prefix }: { prefix: string }) {
+function ToolsForm({
+  prefix,
+  v,
+  s,
+}: {
+  prefix: string;
+  v: FormBinder["v"];
+  s: FormBinder["s"];
+}) {
   return (
     <>
       <h2 className="text-lg font-semibold">Tool & Equipment Review</h2>
@@ -398,21 +407,63 @@ function ToolsForm({ prefix }: { prefix: string }) {
       <div className="mt-5 space-y-5">
         <Section title="Context">
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-            <Field id={`${prefix}.datetime`} label="Date & time" placeholder="Auto / now" />
-            <Field id={`${prefix}.area`} label="Project / area" placeholder="Level 3, east wing" />
+            <Field
+              id={`${prefix}.datetime`}
+              label="Date & time"
+              placeholder="Auto / now"
+              value={v(`${prefix}.datetime`)}
+              onChange={s(`${prefix}.datetime`)}
+            />
+            <Field
+              id={`${prefix}.area`}
+              label="Project / area"
+              placeholder="Level 3, east wing"
+              value={v(`${prefix}.area`)}
+              onChange={s(`${prefix}.area`)}
+            />
           </div>
-          <Field id={`${prefix}.reporter`} label="Reporter" placeholder="Supervisor / worker name" />
+          <Field
+            id={`${prefix}.reporter`}
+            label="Reporter"
+            placeholder="Supervisor / worker name"
+            value={v(`${prefix}.reporter`)}
+            onChange={s(`${prefix}.reporter`)}
+          />
         </Section>
 
         <Section title="Equipment">
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-            <Field id={`${prefix}.equipmentName`} label="Tool / equipment" placeholder="Scissor lift" />
-            <Field id={`${prefix}.assetId`} label="Asset ID / serial" placeholder="EQ-2048" />
+            <Field
+              id={`${prefix}.equipmentName`}
+              label="Tool / equipment"
+              placeholder="Scissor lift"
+              value={v(`${prefix}.equipmentName`)}
+              onChange={s(`${prefix}.equipmentName`)}
+            />
+            <Field
+              id={`${prefix}.assetId`}
+              label="Asset ID / serial"
+              placeholder="EQ-2048"
+              value={v(`${prefix}.assetId`)}
+              onChange={s(`${prefix}.assetId`)}
+            />
           </div>
 
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-            <Field id={`${prefix}.manufacturer`} label="Manufacturer" placeholder="Genie" />
-            <Field id={`${prefix}.model`} label="Model" placeholder="GS-1930" />
+            <Field
+              id={`${prefix}.manufacturer`}
+              label="Manufacturer"
+              placeholder="Genie"
+              value={v(`${prefix}.manufacturer`)}
+              onChange={s(`${prefix}.manufacturer`)}
+            />
+            <Field
+              id={`${prefix}.model`}
+              label="Model"
+              placeholder="GS-1930"
+              value={v(`${prefix}.model`)}
+              onChange={s(`${prefix}.model`)}
+            />
           </div>
 
           <Select
@@ -429,6 +480,8 @@ function ToolsForm({ prefix }: { prefix: string }) {
               "Lockout / tagout",
               "Other",
             ]}
+            value={v(`${prefix}.issueCategory`)}
+            onChange={s(`${prefix}.issueCategory`)}
           />
         </Section>
 
@@ -439,12 +492,16 @@ function ToolsForm({ prefix }: { prefix: string }) {
               label="Severity"
               placeholder="Select"
               options={["Low", "Medium", "High", "Remove from service"]}
+              value={v(`${prefix}.severity`)}
+              onChange={s(`${prefix}.severity`)}
             />
             <Select
               id={`${prefix}.removedFromService`}
               label="Removed from service?"
               placeholder="Select"
               options={["Yes", "No", "Pending"]}
+              value={v(`${prefix}.removedFromService`)}
+              onChange={s(`${prefix}.removedFromService`)}
             />
           </div>
 
@@ -452,6 +509,8 @@ function ToolsForm({ prefix }: { prefix: string }) {
             id={`${prefix}.issueDescription`}
             label="Issue description"
             placeholder="Describe the condition, observed risk, and immediate concern"
+            value={v(`${prefix}.issueDescription`)}
+            onChange={s(`${prefix}.issueDescription`)}
           />
         </Section>
       </div>
@@ -459,7 +518,15 @@ function ToolsForm({ prefix }: { prefix: string }) {
   );
 }
 
-function HazardForm({ prefix }: { prefix: string }) {
+function HazardForm({
+  prefix,
+  v,
+  s,
+}: {
+  prefix: string;
+  v: FormBinder["v"];
+  s: FormBinder["s"];
+}) {
   return (
     <>
       <h2 className="text-lg font-semibold">Hazard Observation</h2>
@@ -470,8 +537,20 @@ function HazardForm({ prefix }: { prefix: string }) {
       <div className="mt-5 space-y-5">
         <Section title="Observation">
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-            <Field id={`${prefix}.datetime`} label="Date & time" placeholder="Auto / now" />
-            <Field id={`${prefix}.location`} label="Location" placeholder="Stair tower B" />
+            <Field
+              id={`${prefix}.datetime`}
+              label="Date & time"
+              placeholder="Auto / now"
+              value={v(`${prefix}.datetime`)}
+              onChange={s(`${prefix}.datetime`)}
+            />
+            <Field
+              id={`${prefix}.location`}
+              label="Location"
+              placeholder="Stair tower B"
+              value={v(`${prefix}.location`)}
+              onChange={s(`${prefix}.location`)}
+            />
           </div>
 
           <Select
@@ -488,12 +567,16 @@ function HazardForm({ prefix }: { prefix: string }) {
               "Traffic / mobile plant",
               "Other",
             ]}
+            value={v(`${prefix}.hazardType`)}
+            onChange={s(`${prefix}.hazardType`)}
           />
 
           <Field
             id={`${prefix}.observation`}
             label="Observation"
             placeholder="Describe what was observed"
+            value={v(`${prefix}.observation`)}
+            onChange={s(`${prefix}.observation`)}
           />
         </Section>
 
@@ -504,12 +587,16 @@ function HazardForm({ prefix }: { prefix: string }) {
               label="Risk level"
               placeholder="Select"
               options={["Low", "Medium", "High", "Critical"]}
+              value={v(`${prefix}.riskLevel`)}
+              onChange={s(`${prefix}.riskLevel`)}
             />
             <Select
               id={`${prefix}.escalated`}
               label="Escalated?"
               placeholder="Select"
               options={["Yes", "No"]}
+              value={v(`${prefix}.escalated`)}
+              onChange={s(`${prefix}.escalated`)}
             />
           </div>
 
@@ -517,6 +604,8 @@ function HazardForm({ prefix }: { prefix: string }) {
             id={`${prefix}.immediateAction`}
             label="Immediate action taken"
             placeholder="Stopped work, barricaded area, notified supervisor"
+            value={v(`${prefix}.immediateAction`)}
+            onChange={s(`${prefix}.immediateAction`)}
           />
         </Section>
       </div>
@@ -524,7 +613,15 @@ function HazardForm({ prefix }: { prefix: string }) {
   );
 }
 
-function PreTaskForm({ prefix }: { prefix: string }) {
+function PreTaskForm({
+  prefix,
+  v,
+  s,
+}: {
+  prefix: string;
+  v: FormBinder["v"];
+  s: FormBinder["s"];
+}) {
   return (
     <>
       <h2 className="text-lg font-semibold">Pre-Task Safety Review</h2>
@@ -535,10 +632,28 @@ function PreTaskForm({ prefix }: { prefix: string }) {
       <div className="mt-5 space-y-5">
         <Section title="Task">
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-            <Field id={`${prefix}.taskName`} label="Task" placeholder="Install guardrails" />
-            <Field id={`${prefix}.workArea`} label="Work area" placeholder="Roof edge zone" />
+            <Field
+              id={`${prefix}.taskName`}
+              label="Task"
+              placeholder="Install guardrails"
+              value={v(`${prefix}.taskName`)}
+              onChange={s(`${prefix}.taskName`)}
+            />
+            <Field
+              id={`${prefix}.workArea`}
+              label="Work area"
+              placeholder="Roof edge zone"
+              value={v(`${prefix}.workArea`)}
+              onChange={s(`${prefix}.workArea`)}
+            />
           </div>
-          <Field id={`${prefix}.crewLead`} label="Crew lead" placeholder="Lead hand / foreperson" />
+          <Field
+            id={`${prefix}.crewLead`}
+            label="Crew lead"
+            placeholder="Lead hand / foreperson"
+            value={v(`${prefix}.crewLead`)}
+            onChange={s(`${prefix}.crewLead`)}
+          />
         </Section>
 
         <Section title="Controls">
@@ -548,12 +663,16 @@ function PreTaskForm({ prefix }: { prefix: string }) {
               label="Permit required"
               placeholder="Select"
               options={["Yes", "No", "Unknown"]}
+              value={v(`${prefix}.permitRequired`)}
+              onChange={s(`${prefix}.permitRequired`)}
             />
             <Select
               id={`${prefix}.stopWorkAuthority`}
               label="Stop-work reviewed"
               placeholder="Select"
               options={["Yes", "No"]}
+              value={v(`${prefix}.stopWorkAuthority`)}
+              onChange={s(`${prefix}.stopWorkAuthority`)}
             />
           </div>
 
@@ -561,6 +680,8 @@ function PreTaskForm({ prefix }: { prefix: string }) {
             id={`${prefix}.criticalControls`}
             label="Critical controls"
             placeholder="List top controls for the task"
+            value={v(`${prefix}.criticalControls`)}
+            onChange={s(`${prefix}.criticalControls`)}
           />
         </Section>
       </div>
@@ -568,7 +689,15 @@ function PreTaskForm({ prefix }: { prefix: string }) {
   );
 }
 
-function PPEForm({ prefix }: { prefix: string }) {
+function PPEForm({
+  prefix,
+  v,
+  s,
+}: {
+  prefix: string;
+  v: FormBinder["v"];
+  s: FormBinder["s"];
+}) {
   return (
     <>
       <h2 className="text-lg font-semibold">PPE / Fall Protection Check</h2>
@@ -579,8 +708,20 @@ function PPEForm({ prefix }: { prefix: string }) {
       <div className="mt-5 space-y-5">
         <Section title="Work context">
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-            <Field id={`${prefix}.workType`} label="Work type" placeholder="Roofing / steel / access" />
-            <Field id={`${prefix}.area`} label="Area" placeholder="North elevation" />
+            <Field
+              id={`${prefix}.workType`}
+              label="Work type"
+              placeholder="Roofing / steel / access"
+              value={v(`${prefix}.workType`)}
+              onChange={s(`${prefix}.workType`)}
+            />
+            <Field
+              id={`${prefix}.area`}
+              label="Area"
+              placeholder="North elevation"
+              value={v(`${prefix}.area`)}
+              onChange={s(`${prefix}.area`)}
+            />
           </div>
         </Section>
 
@@ -591,12 +732,16 @@ function PPEForm({ prefix }: { prefix: string }) {
               label="PPE status"
               placeholder="Select"
               options={["Complete", "Incomplete", "Deficient"]}
+              value={v(`${prefix}.ppeStatus`)}
+              onChange={s(`${prefix}.ppeStatus`)}
             />
             <Select
               id={`${prefix}.fallProtection`}
               label="Fall protection"
               placeholder="Select"
               options={["Required", "Not required", "In place", "Deficient"]}
+              value={v(`${prefix}.fallProtection`)}
+              onChange={s(`${prefix}.fallProtection`)}
             />
           </div>
 
@@ -605,16 +750,32 @@ function PPEForm({ prefix }: { prefix: string }) {
             label="Anchor / tie-off verified"
             placeholder="Select"
             options={["Yes", "No", "N/A"]}
+            value={v(`${prefix}.anchorVerified`)}
+            onChange={s(`${prefix}.anchorVerified`)}
           />
 
-          <Field id={`${prefix}.notes`} label="Notes" placeholder="Record missing or deficient items" />
+          <Field
+            id={`${prefix}.notes`}
+            label="Notes"
+            placeholder="Record missing or deficient items"
+            value={v(`${prefix}.notes`)}
+            onChange={s(`${prefix}.notes`)}
+          />
         </Section>
       </div>
     </>
   );
 }
 
-function IncidentForm({ prefix }: { prefix: string }) {
+function IncidentForm({
+  prefix,
+  v,
+  s,
+}: {
+  prefix: string;
+  v: FormBinder["v"];
+  s: FormBinder["s"];
+}) {
   return (
     <>
       <h2 className="text-lg font-semibold">Incident / Near-Miss Intake</h2>
@@ -630,17 +791,33 @@ function IncidentForm({ prefix }: { prefix: string }) {
               label="Event type"
               placeholder="Select"
               options={["Near miss", "First aid", "Medical aid", "Property damage", "Recordable", "Other"]}
+              value={v(`${prefix}.eventType`)}
+              onChange={s(`${prefix}.eventType`)}
             />
             <Select
               id={`${prefix}.severity`}
               label="Severity"
               placeholder="Select"
               options={["Low", "Moderate", "High", "Critical"]}
+              value={v(`${prefix}.severity`)}
+              onChange={s(`${prefix}.severity`)}
             />
           </div>
 
-          <Field id={`${prefix}.location`} label="Location" placeholder="Laydown yard / floor / zone" />
-          <Field id={`${prefix}.summary`} label="Event summary" placeholder="Describe what happened" />
+          <Field
+            id={`${prefix}.location`}
+            label="Location"
+            placeholder="Laydown yard / floor / zone"
+            value={v(`${prefix}.location`)}
+            onChange={s(`${prefix}.location`)}
+          />
+          <Field
+            id={`${prefix}.summary`}
+            label="Event summary"
+            placeholder="Describe what happened"
+            value={v(`${prefix}.summary`)}
+            onChange={s(`${prefix}.summary`)}
+          />
         </Section>
 
         <Section title="Immediate response">
@@ -650,12 +827,16 @@ function IncidentForm({ prefix }: { prefix: string }) {
               label="Medical aid"
               placeholder="Select"
               options={["Yes", "No", "Unknown"]}
+              value={v(`${prefix}.medicalAid`)}
+              onChange={s(`${prefix}.medicalAid`)}
             />
             <Select
               id={`${prefix}.workStopped`}
               label="Work stopped"
               placeholder="Select"
               options={["Yes", "No"]}
+              value={v(`${prefix}.workStopped`)}
+              onChange={s(`${prefix}.workStopped`)}
             />
           </div>
 
@@ -663,6 +844,8 @@ function IncidentForm({ prefix }: { prefix: string }) {
             id={`${prefix}.initialActions`}
             label="Initial actions"
             placeholder="Secure area, notify supervisor, preserve scene"
+            value={v(`${prefix}.initialActions`)}
+            onChange={s(`${prefix}.initialActions`)}
           />
         </Section>
       </div>
