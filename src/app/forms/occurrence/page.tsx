@@ -1,7 +1,7 @@
 /*
 ===========================
 FILE: /app/forms/occurrence/page.tsx
-Form 1 UI (controlled inputs + focus highlight + submit email)
+Form 1 UI (Construction occurrence / safety event report + AI summary + email)
 ===========================
 */
 "use client";
@@ -15,118 +15,124 @@ import { Button } from "@/src/app/components/ui/Button";
 import { useAppState } from "@/src/app/components/state/AppState";
 
 const REPORT_TO =
-  process.env.NEXT_PUBLIC_REPORT_TO_EMAIL || "Team10@EffectiveAI.net"; // ✅ receiver (demo inbox)
+  process.env.NEXT_PUBLIC_REPORT_TO_EMAIL || "Team10@ConstructMatrix.net";
 
-/* =========================
-   ✅ DEMO SAFETY HELPERS
-   - auto-fill missing fields
-   - demo fallback if SMTP fails
-========================= */
+const LLM_ENDPOINT = "/api/llm";
 
 function isoStamp() {
-  // 2026-03-04 14:32
   return new Date().toISOString().slice(0, 16).replace("T", " ");
 }
 
-function fillOccurrenceDefaults(occ: Record<string, string>) {
+function fillOccurrenceDefaults(fd: Record<string, string>) {
   const stamp = isoStamp();
-  const next = { ...(occ || {}) };
+  const next = { ...(fd || {}) };
 
   const setIfMissing = (k: string, v: string) => {
     if (!next[k] || String(next[k]).trim() === "") next[k] = v;
   };
 
-  // Keys must match buildOccurrenceEmail() g("...") keys
-  setIfMissing("date", stamp.slice(0, 10)); // YYYY-MM-DD
-  setIfMissing("time", stamp.slice(11)); // HH:MM
-  setIfMissing("callNumber", "2026-DEMO-0001");
-  setIfMissing("occurrenceType", "Other");
-  setIfMissing("occurrenceReference", "OCC-DEMO-0001");
-  setIfMissing("briefEventDescription", "Demo occurrence created during live presentation.");
-
-  setIfMissing("classification", "Operational");
-  setIfMissing("classificationDetails", "Demo classification details recorded in-app.");
-
-  setIfMissing("service", "EAI Ambulance Service");
-  setIfMissing("vehicle", "4012");
-  setIfMissing("vehicleDescription", "Type III Ambulance");
-
+  setIfMissing("date", stamp.slice(0, 10));
+  setIfMissing("time", stamp.slice(11));
+  setIfMissing("projectName", "Demo Construction Project");
+  setIfMissing("location", "Level 3 / East Elevation");
+  setIfMissing("reportReference", "OCC-2026-0001");
+  setIfMissing("eventType", "Hazard observation");
+  setIfMissing("classification", "Safety");
+  setIfMissing("classificationDetails", "Construction safety occurrence logged in-app.");
+  setIfMissing("reportingParty", "Supervisor");
+  setIfMissing("trade", "General labour");
+  setIfMissing("equipmentAsset", "N/A");
+  setIfMissing("sourceTierUsed", "Level 1 — Law & Regulator");
+  setIfMissing(
+    "briefSummary",
+    "Demo safety event recorded during live system presentation."
+  );
   setIfMissing(
     "observation",
-    "Demo observation: Incident documented using chat + voice assistant; no hazards noted."
+    "Observed a condition requiring documentation and follow-up under site safety controls."
   );
   setIfMissing(
-    "actionTaken",
-    "Demo action taken: Assessed situation, documented details, notified appropriate channels."
+    "immediateAction",
+    "Paused affected activity, documented condition, and notified site supervision."
   );
   setIfMissing(
-    "suggestedResolution",
-    "Demo suggested resolution: Review equipment/process and prevent recurrence."
+    "correctiveAction",
+    "Review task setup, confirm governing source, and close corrective actions before resuming work."
   );
-  setIfMissing("managementNotes", "Demo note: Generated for hackathon presentation.");
-
+  setIfMissing("supervisorReview", "Pending supervisor review.");
+  setIfMissing("notifications", "Site supervision notified.");
+  setIfMissing("ohsaImplication", "Review applicable Ontario construction requirements.");
+  setIfMissing("aiSummary", "AI summary not generated.");
   return next;
 }
-
-/* =========================
-   Email text builder
-========================= */
 
 function buildOccurrenceEmail(fd: Record<string, string>) {
   const g = (k: string) => (fd?.[k] || "").trim() || "—";
 
-  const subject = `Occurrence Report — ${g("callNumber")} — ${g("date")}`;
+  const subject = `Construction Occurrence Report — ${g("reportReference")} — ${g("date")}`;
 
   const body = [
-    "EffectiveAI — EMS Documentation System",
-    "OFFICIAL OCCURRENCE REPORT",
+    "GLIP / ConstructMatrix — Construction Safety Intelligence",
+    "CONSTRUCTION OCCURRENCE / SAFETY EVENT REPORT",
     `Generated: ${isoStamp()}`,
     "======================================",
     "",
-    "Occurrence Report",
+    "Incident Overview",
     "----------------",
     `Date: ${g("date")}`,
     `Time: ${g("time")}`,
-    `Call Number: ${g("callNumber")}`,
-    `Occurrence Type: ${g("occurrenceType")}`,
-    `Occurrence Reference: ${g("occurrenceReference")}`,
+    `Project / Site: ${g("projectName")}`,
+    `Location / Area: ${g("location")}`,
+    `Report Reference: ${g("reportReference")}`,
+    `Event Type: ${g("eventType")}`,
     "",
-    `Brief Event Description: ${g("briefEventDescription")}`,
+    `Brief Summary: ${g("briefSummary")}`,
     "",
     "Classification",
     `- Classification: ${g("classification")}`,
     `- Details: ${g("classificationDetails")}`,
     "",
-    "Service & Vehicle",
-    `- Service: ${g("service")}`,
-    `- Vehicle: ${g("vehicle")}`,
-    `- Vehicle Description: ${g("vehicleDescription")}`,
+    "People / Work Context",
+    `- Reporting Party: ${g("reportingParty")}`,
+    `- Trade / Crew: ${g("trade")}`,
+    `- Equipment / Asset: ${g("equipmentAsset")}`,
+    `- Source Tier Used: ${g("sourceTierUsed")}`,
     "",
     "Report Details",
     "Observation / Description:",
     g("observation"),
     "",
-    "Action Taken:",
-    g("actionTaken"),
+    "Immediate Action Taken:",
+    g("immediateAction"),
     "",
-    "Suggested Resolution:",
-    g("suggestedResolution"),
+    "Corrective / Preventive Action:",
+    g("correctiveAction"),
     "",
-    "Management Notes:",
-    g("managementNotes"),
+    "Notifications:",
+    g("notifications"),
+    "",
+    "Supervisor Review:",
+    g("supervisorReview"),
+    "",
+    "OHSA / Regulatory Consideration:",
+    g("ohsaImplication"),
+    "",
+    "AI Summary:",
+    g("aiSummary"),
     "",
     "--------------------------------------",
-    "This email was generated automatically by EffectiveAI.",
-    "For operational use, verify content per service policy.",
+    "Generated by GLIP construction safety workflow.",
+    "Verify content against project requirements and Ontario construction obligations before operational use.",
   ].join("\n");
 
   return { subject, body };
 }
 
 export default function OccurrenceFormPage() {
-  const { getFieldValue, setFieldValue, formData, dispatchAction } = useAppState();
+  const { getFieldValue, setFieldValue, formData, dispatchAction, mentionedEmails } = useAppState();
   const [sending, setSending] = useState(false);
-  const [toast, setToast] = useState<string>("");
+  const [summarizing, setSummarizing] = useState(false);
+  const [toast, setToast] = useState("");
 
   const v = (id: string) => getFieldValue(id);
   const s = (id: string) => (val: string) => setFieldValue(id, val);
@@ -138,9 +144,11 @@ export default function OccurrenceFormPage() {
     return {
       date: g("date"),
       time: g("time"),
-      call: g("callNumber"),
-      type: g("occurrenceType"),
-      summary: g("briefEventDescription"),
+      projectName: g("projectName"),
+      location: g("location"),
+      eventType: g("eventType"),
+      summary: g("briefSummary"),
+      aiSummary: g("aiSummary"),
     };
   }, [occ]);
 
@@ -151,26 +159,90 @@ export default function OccurrenceFormPage() {
     setTimeout(() => setToast(""), 1200);
   }
 
+  async function generateAiSummary() {
+    if (summarizing) return;
+    setSummarizing(true);
+    setToast("");
+
+    const current = fillOccurrenceDefaults(occ);
+
+    try {
+      const response = await fetch(LLM_ENDPOINT, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          provider: "auto",
+          messages: [
+            {
+              role: "system",
+              content: `
+You are a construction safety reporting assistant.
+You are helping prepare an Ontario construction occurrence report.
+
+Return concise plain text with:
+1. Summary
+2. Immediate concerns
+3. Recommended next steps
+4. Supervisor note
+
+Keep it practical and short.
+Do not invent legal citations.
+              `.trim(),
+            },
+            {
+              role: "user",
+              content: `
+Generate an AI summary for this construction occurrence form:
+
+${JSON.stringify(current, null, 2)}
+              `.trim(),
+            },
+          ],
+        }),
+      });
+
+      const data = await response.json().catch(() => ({}));
+
+      if (!data?.ok || !data?.text) {
+        throw new Error(data?.error || "AI summary failed");
+      }
+
+      setFieldValue("occurrence.aiSummary", String(data.text).trim());
+      dispatchAction({
+        type: "APPEND_CHAT_NOTE",
+        text: "🤖 Construction occurrence AI summary generated.",
+      });
+      setToast("AI summary generated.");
+      setTimeout(() => setToast(""), 1600);
+    } catch (e: any) {
+      setToast(`AI summary unavailable: ${String(e?.message || e)}`);
+      setTimeout(() => setToast(""), 2200);
+    } finally {
+      setSummarizing(false);
+    }
+  }
+
   async function submitEmail() {
     if (sending) return;
     setSending(true);
     setToast("");
 
-    // ✅ Demo-safe: fill missing fields so the email always looks complete
     const filled = fillOccurrenceDefaults(occ);
 
-    // ✅ Write defaults back into AppState so preview matches what is emailed
     for (const [k, val] of Object.entries(filled)) {
       setFieldValue(`occurrence.${k}`, String(val));
     }
 
     try {
       const { subject, body } = buildOccurrenceEmail(filled);
+      const recipients =
+        mentionedEmails && mentionedEmails.length > 0 ? mentionedEmails : [REPORT_TO];
+      const toList = recipients.join(", ");
 
       const r = await fetch("/api/email", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ to: REPORT_TO, subject, body }),
+        body: JSON.stringify({ to: toList, subject, body }),
       });
 
       const data = await r.json().catch(() => ({}));
@@ -178,24 +250,22 @@ export default function OccurrenceFormPage() {
       if (data?.ok) {
         dispatchAction({
           type: "APPEND_CHAT_NOTE",
-          text: `✅ Occurrence emailed to ${REPORT_TO}: ${subject}`,
+          text: `✅ Construction occurrence emailed to ${toList}: ${subject}`,
         });
-        setToast(`✅ Sent to ${REPORT_TO}`);
+        setToast(`✅ Sent to ${toList}`);
       } else {
-        // ✅ DEMO FALLBACK (does not crash your presentation)
         dispatchAction({
           type: "APPEND_CHAT_NOTE",
           text: `📨 SENT (DEMO MODE) — SMTP failed (${data?.error || "Unknown error"}) — ${subject}`,
         });
-        setToast(`📨 SENT (DEMO MODE) — SMTP failed`);
+        setToast("📨 SENT (DEMO MODE) — SMTP failed");
       }
     } catch (e: any) {
-      // ✅ DEMO FALLBACK: network/route failure
       dispatchAction({
         type: "APPEND_CHAT_NOTE",
         text: `📨 SENT (DEMO MODE) — Email error (${String(e?.message || e)})`,
       });
-      setToast(`📨 SENT (DEMO MODE) — Email error`);
+      setToast("📨 SENT (DEMO MODE) — Email error");
     } finally {
       setSending(false);
       setTimeout(() => setToast(""), 2500);
@@ -206,9 +276,9 @@ export default function OccurrenceFormPage() {
     <AppShell>
       <div className="grid gap-4 lg:grid-cols-2">
         <Card>
-          <h2 className="text-lg font-semibold">Form 1 — Occurrence Report</h2>
+          <h2 className="text-lg font-semibold">Form 1 — Construction Occurrence Report</h2>
           <p className="mt-1 text-sm text-zinc-400">
-            AI + voice can fill fields one at a time (focus highlight).
+            AI + voice can fill fields one at a time and generate a concise safety summary.
           </p>
 
           {toast ? (
@@ -237,36 +307,53 @@ export default function OccurrenceFormPage() {
               </div>
 
               <Field
-                id="occurrence.callNumber"
-                label="Call number"
-                placeholder="e.g., 2026-04125"
-                value={v("occurrence.callNumber")}
-                onChange={s("occurrence.callNumber")}
-              />
-
-              <Select
-                id="occurrence.occurrenceType"
-                label="Occurrence type"
-                placeholder="Select"
-                options={["Equipment issue", "Vehicle incident", "Station / base", "Other"]}
-                value={v("occurrence.occurrenceType")}
-                onChange={s("occurrence.occurrenceType")}
+                id="occurrence.projectName"
+                label="Project / site"
+                placeholder="e.g., Toronto Tower Phase 2"
+                value={v("occurrence.projectName")}
+                onChange={s("occurrence.projectName")}
               />
 
               <Field
-                id="occurrence.occurrenceReference"
-                label="Occurrence reference"
-                placeholder="e.g., OCC-2026-0087"
-                value={v("occurrence.occurrenceReference")}
-                onChange={s("occurrence.occurrenceReference")}
+                id="occurrence.location"
+                label="Location / area"
+                placeholder="e.g., Level 8, south edge"
+                value={v("occurrence.location")}
+                onChange={s("occurrence.location")}
               />
 
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <Field
+                  id="occurrence.reportReference"
+                  label="Report reference"
+                  placeholder="e.g., OCC-2026-0087"
+                  value={v("occurrence.reportReference")}
+                  onChange={s("occurrence.reportReference")}
+                />
+                <Select
+                  id="occurrence.eventType"
+                  label="Event type"
+                  placeholder="Select"
+                  options={[
+                    "Hazard observation",
+                    "Near miss",
+                    "Equipment issue",
+                    "Property damage",
+                    "Worker concern",
+                    "Environmental",
+                    "Other",
+                  ]}
+                  value={v("occurrence.eventType")}
+                  onChange={s("occurrence.eventType")}
+                />
+              </div>
+
               <Field
-                id="occurrence.briefEventDescription"
-                label="Brief event description"
-                placeholder="Short summary of the occurrence"
-                value={v("occurrence.briefEventDescription")}
-                onChange={s("occurrence.briefEventDescription")}
+                id="occurrence.briefSummary"
+                label="Brief summary"
+                placeholder="Short summary of the event or condition"
+                value={v("occurrence.briefSummary")}
+                onChange={s("occurrence.briefSummary")}
               />
             </Section>
 
@@ -275,7 +362,14 @@ export default function OccurrenceFormPage() {
                 id="occurrence.classification"
                 label="Classification"
                 placeholder="Select"
-                options={["Operational", "Safety", "Maintenance", "Other"]}
+                options={[
+                  "Safety",
+                  "Operational",
+                  "Equipment / maintenance",
+                  "Environmental",
+                  "Compliance",
+                  "Other",
+                ]}
                 value={v("occurrence.classification")}
                 onChange={s("occurrence.classification")}
               />
@@ -289,30 +383,45 @@ export default function OccurrenceFormPage() {
               />
             </Section>
 
-            <Section title="Service & Vehicle">
+            <Section title="People / Work Context">
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <Field
+                  id="occurrence.reportingParty"
+                  label="Reporting party"
+                  placeholder="Supervisor / worker / coordinator"
+                  value={v("occurrence.reportingParty")}
+                  onChange={s("occurrence.reportingParty")}
+                />
+                <Field
+                  id="occurrence.trade"
+                  label="Trade / crew"
+                  placeholder="e.g., carpentry, electrical"
+                  value={v("occurrence.trade")}
+                  onChange={s("occurrence.trade")}
+                />
+              </div>
+
+              <Field
+                id="occurrence.equipmentAsset"
+                label="Equipment / asset"
+                placeholder="e.g., scissor lift EQ-2048"
+                value={v("occurrence.equipmentAsset")}
+                onChange={s("occurrence.equipmentAsset")}
+              />
+
               <Select
-                id="occurrence.service"
-                label="Service"
+                id="occurrence.sourceTierUsed"
+                label="Source tier used"
                 placeholder="Select"
-                options={["EAI Ambulance Service", "Other"]}
-                value={v("occurrence.service")}
-                onChange={s("occurrence.service")}
-              />
-
-              <Field
-                id="occurrence.vehicle"
-                label="Vehicle"
-                placeholder="4-digit # (e.g., 4012)"
-                value={v("occurrence.vehicle")}
-                onChange={s("occurrence.vehicle")}
-              />
-
-              <Field
-                id="occurrence.vehicleDescription"
-                label="Vehicle description"
-                placeholder="e.g., Type III Ambulance"
-                value={v("occurrence.vehicleDescription")}
-                onChange={s("occurrence.vehicleDescription")}
+                options={[
+                  "Level 1 — Law & Regulator",
+                  "Level 2 — Consensus Standards",
+                  "Level 3 — Industry Frameworks",
+                  "Level 4 — Manufacturer Instructions",
+                  "Level 5 — Trade / Training Content",
+                ]}
+                value={v("occurrence.sourceTierUsed")}
+                onChange={s("occurrence.sourceTierUsed")}
               />
             </Section>
 
@@ -327,60 +436,100 @@ export default function OccurrenceFormPage() {
               />
 
               <Field
-                id="occurrence.actionTaken"
-                label="Action taken"
-                placeholder="Describe immediate actions..."
+                id="occurrence.immediateAction"
+                label="Immediate action taken"
+                placeholder="Describe immediate controls or actions..."
                 textarea
-                value={v("occurrence.actionTaken")}
-                onChange={s("occurrence.actionTaken")}
+                value={v("occurrence.immediateAction")}
+                onChange={s("occurrence.immediateAction")}
               />
 
               <Field
-                id="occurrence.suggestedResolution"
-                label="Suggested resolution"
+                id="occurrence.correctiveAction"
+                label="Corrective / preventive action"
                 placeholder="Recommended steps to prevent recurrence..."
                 textarea
-                value={v("occurrence.suggestedResolution")}
-                onChange={s("occurrence.suggestedResolution")}
+                value={v("occurrence.correctiveAction")}
+                onChange={s("occurrence.correctiveAction")}
               />
 
               <Field
-                id="occurrence.managementNotes"
-                label="Management notes"
-                placeholder="Notes for supervisory review..."
+                id="occurrence.notifications"
+                label="Notifications"
+                placeholder="Who was notified?"
+                value={v("occurrence.notifications")}
+                onChange={s("occurrence.notifications")}
+              />
+
+              <Field
+                id="occurrence.supervisorReview"
+                label="Supervisor review"
+                placeholder="Notes for superintendent / supervisor review"
                 textarea
-                value={v("occurrence.managementNotes")}
-                onChange={s("occurrence.managementNotes")}
+                value={v("occurrence.supervisorReview")}
+                onChange={s("occurrence.supervisorReview")}
+              />
+
+              <Field
+                id="occurrence.ohsaImplication"
+                label="OHSA / regulatory consideration"
+                placeholder="What Ontario construction requirement may apply?"
+                textarea
+                value={v("occurrence.ohsaImplication")}
+                onChange={s("occurrence.ohsaImplication")}
+              />
+            </Section>
+
+            <Section title="AI Summary">
+              <Field
+                id="occurrence.aiSummary"
+                label="AI summary"
+                placeholder="Generate AI summary to fill this section"
+                textarea
+                value={v("occurrence.aiSummary")}
+                onChange={s("occurrence.aiSummary")}
               />
             </Section>
 
             <div className="flex flex-col gap-2 sm:flex-row sm:justify-end">
-              <Button variant="ghost" onClick={clearForm} disabled={sending}>
+              <Button variant="ghost" onClick={clearForm} disabled={sending || summarizing}>
                 Clear
               </Button>
-              <Button variant="primary" onClick={submitEmail} disabled={sending}>
-                {sending ? "Sending…" : `Submit (Email → ${REPORT_TO})`}
+              <Button variant="ghost" onClick={generateAiSummary} disabled={sending || summarizing}>
+                {summarizing ? "Generating…" : "Generate AI Summary"}
+              </Button>
+              <Button variant="primary" onClick={submitEmail} disabled={sending || summarizing}>
+                {sending
+                  ? "Sending…"
+                  : `Submit (Email → ${
+                      mentionedEmails && mentionedEmails.length > 0
+                        ? mentionedEmails.join(", ")
+                        : REPORT_TO
+                    })`}
               </Button>
             </div>
           </div>
         </Card>
 
-        {/* Right: live preview */}
         <Card>
           <h3 className="text-sm font-medium">Live Form Preview</h3>
-          <p className="mt-1 text-xs text-zinc-400">This is exactly what will be emailed.</p>
+          <p className="mt-1 text-xs text-zinc-400">
+            This is what will be used for summary and email output.
+          </p>
 
           <div className="mt-4 rounded-2xl bg-black/30 p-4 text-sm text-zinc-200 shadow-inner">
             <div className="grid grid-cols-2 gap-3">
               <Preview k="Date" v={preview.date} />
               <Preview k="Time" v={preview.time} />
-              <Preview k="Call" v={preview.call} />
-              <Preview k="Type" v={preview.type} />
+              <Preview k="Project" v={preview.projectName} />
+              <Preview k="Location" v={preview.location} />
+              <Preview k="Type" v={preview.eventType} />
+              <Preview k="Summary" v={preview.summary} />
             </div>
 
             <div className="mt-4">
-              <div className="text-xs uppercase tracking-wide text-zinc-500">Summary</div>
-              <div className="mt-1 whitespace-pre-wrap text-zinc-300">{preview.summary}</div>
+              <div className="text-xs uppercase tracking-wide text-zinc-500">AI Summary</div>
+              <div className="mt-1 whitespace-pre-wrap text-zinc-300">{preview.aiSummary}</div>
             </div>
           </div>
         </Card>

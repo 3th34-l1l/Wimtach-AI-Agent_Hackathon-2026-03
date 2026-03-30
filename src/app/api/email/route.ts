@@ -185,7 +185,7 @@ export async function POST(req: Request) {
     }
     if (!fromEnv) return ok({ ok: false, error: "Missing SMTP_FROM (or SMTP_USER)." });
 
-    const companyName = String(process.env.COMPANY_NAME ?? "EffectiveAI").trim();
+    const companyName = String(process.env.COMPANY_NAME ?? "ConstructMatrix").trim();
     const tagline = String(process.env.COMPANY_TAGLINE ?? "EMS Assistant").trim();
     const primary = String(process.env.COMPANY_PRIMARY_COLOR ?? "#2563eb").trim();
     const website = String(process.env.COMPANY_WEBSITE ?? "").trim();

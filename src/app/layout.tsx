@@ -10,8 +10,8 @@ import "./globals.css";
 import type { Metadata } from "next";
 
 export const metadata: Metadata = {
-  title: "EffectiveAI EMS Assistant",
-  description: "Conversational, voice-first form completion for paramedics.",
+  title: "GLIP Safety Intelligence",
+  description: "Track incidents, surface recurring hazards, and generate plain-language safety insights for construction teams.",
 };
 
 export default function RootLayout({

@@ -14,7 +14,7 @@ export function TopNav() {
     <div className="sticky top-0 z-20 border-b border-white/5 bg-black/30 px-4 py-3 backdrop-blur md:px-6">
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-3 lg:hidden">
-          <Link href="/" className="text-sm font-semibold">EffectiveAI</Link>
+          <Link href="/" className="text-sm font-semibold">ConstructMatrix</Link>
           <span className="text-xs text-zinc-500">Prototype</span>
         </div>
 

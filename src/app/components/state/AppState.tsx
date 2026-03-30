@@ -1,36 +1,54 @@
-/* ===========================
-FILE: /components/state/AppState.tsx
-(or /src/app/components/state/AppState.tsx)
-FULL DROP-IN (task + focus + form fill)
-✅ activePage + navigation intent support
-✅ focusField highlight support
-✅ generic form storage (occurrence + teddy)
-✅ set field values via dispatchAction (SET_FIELD_VALUE)
-✅ clear per-form (CLEAR_FORM)
-✅ STATUS map + shiftSchedule preserved
-=========================== */
-
 "use client";
 
 import React, { createContext, useContext, useMemo, useState } from "react";
 
+type ProjectCompany = {
+  company_id: string | number;
+  company_name: string;
+  company_ticker?: string | null;
+  industry?: string | null;
+  country?: string | null;
+};
+
+type ProjectMetric = {
+  facility_type?: string | null;
+  parameter?: string | null;
+  unit_value?: string | number | null;
+  unit_name?: string | null;
+  product_name?: string | null;
+};
+
+type ProjectContextState = {
+  projectId?: string | number | null;
+  projectName?: string | null;
+  projectSummary?: string | null;
+  projectStage?: string | null;
+  projectLocation?: string | null;
+  sectorRoot?: string | null;
+  coordinationBurden?: string | null;
+  reviewSensitivity?: string | null;
+  environment?: string | null;
+  complexity?: string | null;
+  projectInsights: string[];
+  projectCompanies: ProjectCompany[];
+  projectMetrics: ProjectMetric[];
+};
+
 type StatusValue = "GOOD" | "BAD";
 export type ShiftRow = { date?: string; start?: string; end?: string; unit?: string; team?: string };
 
-// ✅ Stored form buckets (add more forms later)
 export type FormKey = "occurrence" | "teddy";
 export type FormData = {
   occurrence: Record<string, string>;
   teddy: Record<string, string>;
 };
 
-// ✅ Optional: global “task” controller (you can wire this into Voice later)
 export type TaskType = "occurrence" | "teddy" | "status" | "shift" | "none";
 export type TaskState = {
   type: TaskType;
   title: string;
   status: "idle" | "active" | "done";
-  step?: string; // usually equals focusField e.g. "occurrence.callNumber"
+  step?: string;
   startedAt?: number;
 };
 
@@ -43,14 +61,13 @@ export type Action =
   | { type: "SET_SHIFT_SCHEDULE"; rows: ShiftRow[] }
   | { type: "APPEND_CHAT_NOTE"; text: string }
   | { type: "SET_FOCUS_FIELD"; id: string }
-  // ✅ NEW: generic form fill
   | { type: "SET_FIELD_VALUE"; id: string; value: string }
   | { type: "CLEAR_FORM"; form: FormKey }
-  // ✅ NEW: task/session
   | { type: "START_TASK"; task: Omit<TaskState, "status" | "startedAt"> }
   | { type: "UPDATE_TASK_STEP"; step: string }
   | { type: "COMPLETE_TASK" }
-  | { type: "RESET_TASK" };
+  | { type: "RESET_TASK" }
+  | { type: "SET_MENTIONED_EMAILS"; emails: string[] };
 
 export type AppStateValue = {
   activePage: string;
@@ -71,17 +88,33 @@ export type AppStateValue = {
   shiftSchedule: ShiftRow[];
   setShiftSchedule: (rows: ShiftRow[]) => void;
 
-  // ✅ Focus support
   focusField: string;
   setFocusField: (id: string) => void;
 
-  // ✅ Form values
   formData: FormData;
   getFieldValue: (id: string) => string;
   setFieldValue: (id: string, value: string) => void;
 
-  // ✅ Task/session
   task: TaskState;
+
+  mentionedEmails: string[];
+  setMentionedEmails: (emails: string[]) => void;
+
+  projectId: string | number | null;
+  projectName: string | null;
+  projectSummary: string | null;
+  projectStage: string | null;
+  projectLocation: string | null;
+  sectorRoot: string | null;
+  coordinationBurden: string | null;
+  reviewSensitivity: string | null;
+  environment: string | null;
+  complexity: string | null;
+  projectInsights: string[];
+  projectCompanies: ProjectCompany[];
+  projectMetrics: ProjectMetric[];
+  setProjectContext: (payload: Partial<ProjectContextState>) => void;
+  clearProjectContext: () => void;
 
   dispatchAction: (a: Action) => void;
 };
@@ -89,7 +122,6 @@ export type AppStateValue = {
 const Ctx = createContext<AppStateValue | null>(null);
 
 function parseFieldId(id: string) {
-  // supports "occurrence.callNumber" => { form: "occurrence", key: "callNumber" }
   const [form, ...rest] = String(id || "").split(".");
   return { form: (form || "") as string, key: rest.join(".") || "" };
 }
@@ -97,6 +129,22 @@ function parseFieldId(id: string) {
 function isFormKey(x: string): x is FormKey {
   return x === "occurrence" || x === "teddy";
 }
+
+const EMPTY_PROJECT_CONTEXT: ProjectContextState = {
+  projectId: null,
+  projectName: null,
+  projectSummary: null,
+  projectStage: null,
+  projectLocation: null,
+  sectorRoot: null,
+  coordinationBurden: null,
+  reviewSensitivity: null,
+  environment: null,
+  complexity: null,
+  projectInsights: [],
+  projectCompanies: [],
+  projectMetrics: [],
+};
 
 export function AppStateProvider({ children }: { children: React.ReactNode }) {
   const [activePage, setActivePage] = useState("/chat");
@@ -110,18 +158,22 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
 
   const [focusField, setFocusField] = useState<string>("");
 
-  // ✅ NEW: actual form storage (Occurrence + Teddy)
   const [formData, setFormData] = useState<FormData>({
     occurrence: {},
     teddy: {},
   });
 
-  // ✅ NEW: task/session controller
   const [task, setTask] = useState<TaskState>({
     type: "none",
     title: "",
     status: "idle",
   });
+
+  const [mentionedEmails, setMentionedEmails] = useState<string[]>([]);
+
+  const [projectContext, setProjectContextState] = useState<ProjectContextState>(
+    EMPTY_PROJECT_CONTEXT
+  );
 
   function patchStatus(patch: Record<string, StatusValue>) {
     setStatusMap((prev) => ({ ...prev, ...patch }));
@@ -147,52 +199,50 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
     });
   }
 
+  function setProjectContext(payload: Partial<ProjectContextState>) {
+    setProjectContextState((prev) => ({
+      ...prev,
+      ...payload,
+    }));
+  }
+
+  function clearProjectContext() {
+    setProjectContextState(EMPTY_PROJECT_CONTEXT);
+  }
+
   function dispatchAction(a: Action) {
     switch (a.type) {
       case "SET_ACTIVE_PAGE":
         setActivePage(a.page);
         return;
-
       case "SET_SELECTED_FORM":
         setSelectedForm(a.form);
         return;
-
       case "SET_WEATHER":
         setWeatherSummary(a.text);
         return;
-
       case "SET_NARRATIVE":
         setNarrative(a.text);
         return;
-
       case "PATCH_STATUS":
         patchStatus(a.patch);
         return;
-
       case "SET_SHIFT_SCHEDULE":
         setShiftSchedule(a.rows);
         return;
-
       case "APPEND_CHAT_NOTE":
         setNarrative((prev) => (prev === "—" ? a.text : `${prev}\n\n${a.text}`));
         return;
-
       case "SET_FOCUS_FIELD":
         setFocusField(a.id);
-        // keep task step aligned if active
         setTask((prev) => (prev.status === "active" ? { ...prev, step: a.id } : prev));
         return;
-
-      // ✅ NEW: generic form fill
       case "SET_FIELD_VALUE":
         setFieldValue(a.id, a.value);
         return;
-
       case "CLEAR_FORM":
         setFormData((prev) => ({ ...prev, [a.form]: {} }));
         return;
-
-      // ✅ NEW: task/session
       case "START_TASK":
         setTask({
           ...a.task,
@@ -201,17 +251,17 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
           step: a.task.step || "",
         });
         return;
-
       case "UPDATE_TASK_STEP":
         setTask((prev) => ({ ...prev, status: "active", step: a.step }));
         return;
-
       case "COMPLETE_TASK":
         setTask((prev) => ({ ...prev, status: "done" }));
         return;
-
       case "RESET_TASK":
         setTask({ type: "none", title: "", status: "idle" });
+        return;
+      case "SET_MENTIONED_EMAILS":
+        setMentionedEmails(a.emails);
         return;
     }
   }
@@ -245,6 +295,25 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
 
       task,
 
+      mentionedEmails,
+      setMentionedEmails,
+
+      projectId: projectContext.projectId ?? null,
+      projectName: projectContext.projectName ?? null,
+      projectSummary: projectContext.projectSummary ?? null,
+      projectStage: projectContext.projectStage ?? null,
+      projectLocation: projectContext.projectLocation ?? null,
+      sectorRoot: projectContext.sectorRoot ?? null,
+      coordinationBurden: projectContext.coordinationBurden ?? null,
+      reviewSensitivity: projectContext.reviewSensitivity ?? null,
+      environment: projectContext.environment ?? null,
+      complexity: projectContext.complexity ?? null,
+      projectInsights: projectContext.projectInsights,
+      projectCompanies: projectContext.projectCompanies,
+      projectMetrics: projectContext.projectMetrics,
+      setProjectContext,
+      clearProjectContext,
+
       dispatchAction,
     }),
     [
@@ -257,6 +326,8 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
       focusField,
       formData,
       task,
+      mentionedEmails,
+      projectContext,
     ]
   );
 

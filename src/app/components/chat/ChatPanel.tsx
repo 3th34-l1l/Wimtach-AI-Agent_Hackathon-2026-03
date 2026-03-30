@@ -4,8 +4,18 @@ import React, { useMemo, useRef, useState, useEffect } from "react";
 import { usePathname } from "next/navigation";
 import { Card } from "@/src/app/components/ui/Card";
 import { Button } from "@/src/app/components/ui/Button";
-import { Send, Mic, CloudSun, Volume2, VolumeX, Loader2, Square } from "lucide-react";
+import {
+  Send,
+  Mic,
+  CloudSun,
+  Volume2,
+  VolumeX,
+  Loader2,
+  Square,
+  ShieldCheck,
+} from "lucide-react";
 import { useAppState } from "@/src/app/components/state/AppState";
+import { extractEmailsFromText, validateEmails } from "@/lib/emailUtils";
 
 type Role = "ai" | "user";
 type Msg = { id: string; role: Role; text: string };
@@ -20,12 +30,14 @@ function uid() {
 }
 
 /**
- * JSON ACTION CONTRACT (matches your AppState reducer)
+ * JSON ACTION CONTRACT
+ * Keep this compatible with existing AppState reducer for now.
+ * We are changing the language and intent, not rebuilding the state model yet.
  */
 type JsonAction = {
   say?: string;
 
-  // navigation-ish
+  // workflow / navigation-ish
   setSelectedForm?: string;
 
   // summaries
@@ -40,10 +52,16 @@ type JsonAction = {
   // confirmations
   confirm?: string;
 
-  // shifts
-  setShiftSchedule?: Array<{ date?: string; start?: string; end?: string; unit?: string; team?: string }>;
+  // shifts / exports / summaries
+  setShiftSchedule?: Array<{
+    date?: string;
+    start?: string;
+    end?: string;
+    unit?: string;
+    team?: string;
+  }>;
 
-  // status
+  // existing status object reused temporarily for source / review actions
   status?: {
     set?: { key: string; status: "GOOD" | "BAD" }[];
     markAllGood?: boolean;
@@ -63,7 +81,10 @@ function safeParseJson(text: string): JsonAction | null {
     }
   }
 
-  const fenced = raw.match(/```json\s*([\s\S]*?)```/i) || raw.match(/```\s*([\s\S]*?)```/i);
+  const fenced =
+    raw.match(/```json\s*([\s\S]*?)```/i) ||
+    raw.match(/```\s*([\s\S]*?)```/i);
+
   if (fenced?.[1]) {
     try {
       return JSON.parse(fenced[1].trim());
@@ -85,12 +106,61 @@ function safeParseJson(text: string): JsonAction | null {
   return null;
 }
 
+/**
+ * New GLIP-facing workflow labels with backward compatibility.
+ * We keep the old internal route mapping alive for now.
+ */
 function detectSelectedForm(text: string) {
   const t = text.toLowerCase();
-  if (t.includes("occurrence")) return "Occurrence Report";
-  if (t.includes("teddy") || t.includes("bear")) return "Teddy Bear Tracking";
-  if (t.includes("shift")) return "Shift Report";
-  if (t.includes("status") || t.includes("checklist")) return "Paramedic Status";
+
+  // New preferred labels
+  if (
+    t.includes("incident") ||
+    t.includes("near miss") ||
+    t.includes("near-miss") ||
+    t.includes("observation") ||
+    t.includes("hazard") ||
+    t.includes("report")
+  ) {
+    return "Incident Intake";
+  }
+
+  if (
+    t.includes("trend") ||
+    t.includes("pattern") ||
+    t.includes("recurring") ||
+    t.includes("baseline") ||
+    t.includes("summary of issues")
+  ) {
+    return "Trend Review";
+  }
+
+  if (
+    t.includes("summary") ||
+    t.includes("export") ||
+    t.includes("committee report") ||
+    t.includes("plain english report")
+  ) {
+    return "Report Summary";
+  }
+
+  if (
+    t.includes("source") ||
+    t.includes("regulation") ||
+    t.includes("standard") ||
+    t.includes("ohsa") ||
+    t.includes("source ladder") ||
+    t.includes("why was this flagged")
+  ) {
+    return "Source Check";
+  }
+
+  // Temporary backward compatibility with old EMS demo words
+  if (t.includes("occurrence")) return "Incident Intake";
+  if (t.includes("teddy") || t.includes("bear")) return "Trend Review";
+  if (t.includes("shift")) return "Report Summary";
+  if (t.includes("status") || t.includes("checklist")) return "Source Check";
+
   return null;
 }
 
@@ -100,27 +170,39 @@ function userWantsFormCompletion(text: string) {
     t.includes("finish") ||
     t.includes("complete") ||
     t.includes("fill") ||
-    t.includes("do the form") ||
-    t.includes("do this form") ||
-    t.includes("fill this") ||
-    t.includes("finish this") ||
-    t.includes("complete this") ||
-    t.includes("start the form") ||
-    t.includes("start form")
+    t.includes("start") ||
+    t.includes("review this") ||
+    t.includes("capture this") ||
+    t.includes("log this")
   );
 }
 
-/** Map selectedForm string → internal workflow page key */
+/**
+ * Map new workflow label -> existing internal page key
+ * so the current app structure keeps working.
+ */
 function selectedFormToWorkflowPage(form?: string) {
   const f = (form || "").toLowerCase();
+
+  if (f.includes("incident")) return "occurrence";
+  if (f.includes("trend")) return "teddy-bear";
+  if (f.includes("summary")) return "shift";
+  if (f.includes("source")) return "status";
+
+  // backward compatibility
   if (f.includes("occurrence")) return "occurrence";
   if (f.includes("teddy")) return "teddy-bear";
   if (f.includes("shift")) return "shift";
   if (f.includes("status") || f.includes("paramedic")) return "status";
+
   return "";
 }
 
-/** First field per workflow */
+/**
+ * Keep old field ids for now.
+ * Later these should become real GLIP fields like:
+ * report.date, report.location, report.incidentType, source.level, etc.
+ */
 function firstFieldForWorkflow(page: string) {
   if (page === "occurrence") return "occurrence.date";
   if (page === "teddy-bear") return "teddy.datetime";
@@ -129,21 +211,119 @@ function firstFieldForWorkflow(page: string) {
   return "";
 }
 
-/** Helpful “summary / next step” for demo polish */
 function workflowSummary(page: string) {
   if (page === "occurrence") {
-    return "Occurrence Report selected. I’ll fill it one question at a time. First: what date/time did the incident occur?";
+    return "Incident Intake selected. I’ll capture the report step by step. First: when did the incident or near-miss occur?";
   }
   if (page === "teddy-bear") {
-    return "Teddy Bear Tracking selected. First: when was the bear given out (date/time)?";
+    return "Trend Review selected. Tell me which recurring hazard, repeating issue, or baseline change you want to review.";
   }
   if (page === "shift") {
-    return "Shift Report selected. First: what date is the shift for?";
+    return "Report Summary selected. I can help generate a plain-language summary of incidents, trends, or flagged risks.";
   }
   if (page === "status") {
-    return "Paramedic Status selected. Tell me if any items are BAD, and I’ll help fix them quickly.";
+    return "Source Check selected. I can explain why an issue was flagged and what level of source authority supports it.";
   }
-  return "Tell me what you want to do—Occurrence, Teddy Bear, Shift, or Status.";
+  return "Describe a safety report, hazard, near-miss, trend, or source question you want to review.";
+}
+
+function sourceLadderExplainer() {
+  return "Source Ladder: Level 1 is law and regulator guidance, Level 2 is consensus standards, Level 3 is industry frameworks, Level 4 is manufacturer instructions, and Level 5 is trade or training content. Higher levels generally carry stronger authority and enforceability.";
+}
+
+/**
+ * NEW: Project context / DB-first detection helpers
+ */
+function looksLikeProjectQuery(text: string) {
+  const t = text.toLowerCase();
+
+  return (
+    t.includes("project") ||
+    t.includes("ontario") ||
+    t.includes("toronto") ||
+    t.includes("mississauga") ||
+    t.includes("nuclear") ||
+    t.includes("hospital") ||
+    t.includes("infrastructure") ||
+    t.includes("utility") ||
+    t.includes("construction") ||
+    t.includes("execution") ||
+    t.includes("planning") ||
+    t.includes("refurbishment") ||
+    t.includes("redevelopment") ||
+    t.includes("expansion")
+  );
+}
+
+async function fetchProjectContext(query: string) {
+  const r = await fetch(`/api/chat-context?q=${encodeURIComponent(query)}`);
+  const data = await r.json().catch(() => ({}));
+
+  if (!r.ok) {
+    throw new Error(data?.error || "Failed to fetch project context");
+  }
+
+  return data;
+}
+
+function buildProjectAssistantReply(data: any) {
+  if (!data?.found || !data?.projectContext) {
+    return data?.message || "No matching project context found.";
+  }
+
+  const project = data.projectContext.project || {};
+  const inferred = data.projectContext.inferred || {};
+  const companyCount = Array.isArray(data.projectContext.companies)
+    ? data.projectContext.companies.length
+    : 0;
+
+  const alternates = Array.isArray(data.matches)
+    ? data.matches.slice(1, 3).map((m: any) => m.project_name).filter(Boolean)
+    : [];
+
+  const plainMeaning = [
+    project.project_stage
+      ? `It appears to be in the ${String(project.project_stage).toLowerCase()} stage`
+      : null,
+    project.construction_type
+      ? `and is classified as ${String(project.construction_type).toLowerCase()} work`
+      : null,
+    project.location_type
+      ? `in an ${String(project.location_type).toLowerCase()} setting`
+      : null,
+  ]
+    .filter(Boolean)
+    .join(" ");
+
+  const whySignals = [
+    companyCount
+      ? `The database found ${companyCount} linked companies, so the system is treating coordination complexity as ${String(
+          inferred.coordinationBurden || "unknown"
+        ).toLowerCase()}.`
+      : null,
+    inferred.reviewSensitivity
+      ? `Because of the current project stage, review sensitivity is being treated as ${String(
+          inferred.reviewSensitivity
+        ).toLowerCase()}.`
+      : null,
+  ]
+    .filter(Boolean)
+    .join(" ");
+
+  return [
+    `Best match found: ${project.project_name || "Unknown project"}.`,
+    plainMeaning ? `${plainMeaning}.` : null,
+    inferred.sectorRoot
+      ? `This project sits in the ${inferred.sectorRoot} sector.`
+      : null,
+    whySignals,
+    `These are decision-support signals based on project context, not proof of a safety problem.`,
+    alternates.length
+      ? `Other possible matches: ${alternates.join(" | ")}.`
+      : null,
+  ]
+    .filter(Boolean)
+    .join(" ");
 }
 
 export function ChatPanel() {
@@ -151,7 +331,11 @@ export function ChatPanel() {
 
   const [input, setInput] = useState("");
   const [msgs, setMsgs] = useState<Msg[]>([
-    { id: "1", role: "ai", text: "Hi! What would you like to do—Occurrence, Teddy Bear, Shift, or Status?" },
+    {
+      id: "1",
+      role: "ai",
+      text: "Hi! Describe a safety report, near-miss, hazard, trend, source question, or project context you want to review.",
+    },
   ]);
 
   const {
@@ -163,6 +347,10 @@ export function ChatPanel() {
     statusMap,
     shiftSchedule,
     dispatchAction,
+
+    // project context state
+    setProjectContext,
+    clearProjectContext,
   } = useAppState();
 
   const [provider, setProvider] = useState<Provider>("auto");
@@ -170,7 +358,6 @@ export function ChatPanel() {
   const [speak, setSpeak] = useState<boolean>(true);
   const [busy, setBusy] = useState(false);
 
-  // Voice recording
   const [recording, setRecording] = useState(false);
   const [recordSecs, setRecordSecs] = useState(0);
   const [lastTranscript, setLastTranscript] = useState<string>("");
@@ -184,7 +371,6 @@ export function ChatPanel() {
   const canSend = input.trim().length > 0 && !busy;
   const list = useMemo(() => msgs, [msgs]);
 
-  /** ACTIVE PAGE from URL */
   const activePage = useMemo(() => {
     const p = (pathname || "").toLowerCase();
     if (p.includes("status")) return "status";
@@ -196,13 +382,11 @@ export function ChatPanel() {
     return "unknown";
   }, [pathname]);
 
-  /** WORKFLOW PAGE: on /chat, use selectedForm to know which form we’re completing */
   const workflowPage = useMemo(() => {
     if (activePage !== "chat") return activePage;
     return selectedFormToWorkflowPage(selectedForm) || "chat";
   }, [activePage, selectedForm]);
 
-  /** On workflow change, post a helpful summary message (demo polish, no LLM call) */
   useEffect(() => {
     if (!workflowPage || workflowPage === "unknown") return;
     const summary = workflowSummary(workflowPage);
@@ -211,10 +395,18 @@ export function ChatPanel() {
       if (last === summary) return prev;
       return [...prev, { id: uid(), role: "ai", text: summary }];
     });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [workflowPage]);
 
-  /** AUDIO UNLOCK (iOS) */
+  useEffect(() => {
+    const allText = msgs.map((m) => m.text).join(" ");
+    const emails = extractEmailsFromText(allText);
+    const validated = validateEmails(emails);
+
+    if (validated.length > 0) {
+      dispatchAction({ type: "SET_MENTIONED_EMAILS", emails: validated });
+    }
+  }, [msgs, dispatchAction]);
+
   const audioUnlockedRef = useRef(false);
   useEffect(() => {
     const unlock = async () => {
@@ -233,7 +425,6 @@ export function ChatPanel() {
     };
   }, []);
 
-  /** TTS */
   async function playTTS(text: string, mode: TTSMode = "assistant") {
     if (!speak) return;
 
@@ -241,7 +432,6 @@ export function ChatPanel() {
     if (!clean) return;
 
     try {
-      // stop mic before speaking
       if (recording) stopRecording();
 
       const r = await fetch("/api/tts", {
@@ -267,19 +457,28 @@ export function ChatPanel() {
       audioRef.current = a;
       a.onended = () => URL.revokeObjectURL(url);
       await a.play();
-    } catch {
-      // ignore autoplay issues
-    }
+    } catch {}
   }
 
   function pickTTSMode(aiText: string): TTSMode {
     const lower = aiText.toLowerCase();
-    if (lower.includes("summary:") || lower.includes("checklist") || lower.includes("report summary")) return "scribe";
-    if (lower.includes("urgent") || lower.includes("warning") || lower.includes("hazard") || lower.includes("critical")) return "urgent";
+    if (
+      lower.includes("summary:") ||
+      lower.includes("trend summary") ||
+      lower.includes("report summary")
+    )
+      return "scribe";
+    if (
+      lower.includes("urgent") ||
+      lower.includes("warning") ||
+      lower.includes("hazard") ||
+      lower.includes("critical") ||
+      lower.includes("escalate")
+    )
+      return "urgent";
     return "assistant";
   }
 
-  /** APPLY JSON ACTIONS TO APPSTATE */
   function applyJsonAction(a: JsonAction) {
     if (!a) return;
 
@@ -329,7 +528,9 @@ export function ChatPanel() {
 
     if (a.status?.markAllGood) {
       const patch: Record<string, "GOOD"> = {};
-      Object.keys(statusMap ?? {}).forEach((k) => (patch[k] = "GOOD"));
+      Object.keys(statusMap ?? {}).forEach((k) => {
+        patch[k] = "GOOD";
+      });
       dispatchAction({ type: "PATCH_STATUS", patch });
     }
 
@@ -345,38 +546,54 @@ export function ChatPanel() {
     }
   }
 
-  /** LLM CALL */
   async function sendToLLM(nextMsgs: Msg[]) {
     const firstField = firstFieldForWorkflow(workflowPage);
 
     const system = `
-You are an EMS assistant that can update the app state by returning JSON.
+You are GLIP Safety Tracker, an AI assistant for construction safety review and analysis.
 
 CURRENT PAGE: ${workflowPage}
 PATHNAME: ${pathname}
-SELECTED FORM: ${selectedForm ?? "—"}
+SELECTED WORKFLOW: ${selectedForm ?? "—"}
 
-ABSOLUTE RULES (DEMO CRITICAL):
+PRODUCT INTENT:
+- This product is a decision-support layer for construction safety teams.
+- It helps interpret reports, detect patterns, explain findings in plain language, and show what level of authority supports each finding.
+- It is descriptive and review-oriented, not only transactional.
+
+SOURCE LADDER:
+- Level 1 = Law & Regulator (highest authority)
+- Level 2 = Consensus Standards
+- Level 3 = Industry Frameworks
+- Level 4 = Manufacturer Instructions
+- Level 5 = Trade & Training Content (interpretive only)
+
+HOW TO USE THE SOURCE LADDER:
+- Use it to explain source authority, enforceability, and support level.
+- Do NOT claim the ladder proves absolute accuracy.
+- Higher levels generally carry stronger authority.
+- Lower levels may still be useful but are more interpretive.
+
+ABSOLUTE RULES:
 - If you return JSON, you MUST include a helpful "say" message.
-- If the user is completing a form, always focus one field and ask ONE short question.
+- Be concise, specific, and operational.
+- Prefer construction safety language: incident, near-miss, observation, hazard, trend, source, authority, review, project context, site conditions.
+- If the user is completing a workflow, focus one field and ask ONE short question.
 - Do NOT reply with generic text like "Updated". Be specific.
 
-WORKFLOW:
-If the user asks to complete/fill/finish the CURRENT form, start immediately:
-1) Return JSON with { "focusField": "${firstField}", "say": "<ask the question for that field>" }
-2) When user answers, return JSON with:
-   - setFieldValue for the focused field
-   - confirm
-   - focusField for the next field
-   - say with the next question
+WORKFLOW INTENT:
+- Incident Intake = capture report details clearly
+- Trend Review = summarize recurring hazards, baseline changes, and repeating issues
+- Report Summary = generate plain-language review or export summaries
+- Source Check = explain why an issue was flagged and what level of source support applies
 
 JSON schema you may return (ONLY JSON when updating UI):
 {
   "say": "short message/question to show and speak",
-  "setSelectedForm": "Occurrence Report | Teddy Bear Tracking | Shift Report | Paramedic Status",
+  "setSelectedForm": "Incident Intake | Trend Review | Report Summary | Source Check",
   "appendNarrative": "text to add",
   "setNarrative": "replace narrative",
-  "setWeatherSummary": "replace weather summary",
+  "setWeatherSummary": "replace site conditions summary",
   "focusField": "occurrence.date | teddy.datetime | ...",
   "setFieldValue": { "id": "occurrence.callNumber", "value": "..." },
   "confirm": "short confirmation to log",
@@ -384,7 +601,11 @@ JSON schema you may return (ONLY JSON when updating UI):
   "status": {"set":[{"key":"ACRc","status":"GOOD"}], "markAllGood": true, "reset": true}
 }
 
-If you are NOT updating UI, answer normally (plain text) — but still be helpful.
+DESCRIPTIVE STAKEHOLDER BEHAVIOR:
+- When useful, explain what the system is doing in stakeholder-friendly language.
+- If discussing source support, mention the ladder level and what it means.
+- If the user asks what the source ladder is, explain it clearly in plain English.
+- If the user asks about trends, summarize what is repeating and why it matters.
 
 STATE SNAPSHOT:
 - narrative: ${narrative ?? "—"}
@@ -392,13 +613,15 @@ STATE SNAPSHOT:
 - shiftSchedule rows: ${Array.isArray(shiftSchedule) ? shiftSchedule.length : 0}
 
 FIRST FIELD FOR CURRENT WORKFLOW:
-${firstField || "(none) - if none, ask user which form to open"}
+${firstField || "(none) - ask what kind of safety review the user wants"}
 `.trim();
 
     const llmMessages = [
       { role: "system" as const, content: system },
       ...nextMsgs.map((m) => ({
-        role: (m.role === "user" ? "user" : "assistant") as "user" | "assistant",
+        role: (m.role === "user" ? "user" : "assistant") as
+          | "user"
+          | "assistant",
         content: m.text,
       })),
     ];
@@ -423,14 +646,48 @@ ${firstField || "(none) - if none, ask user which form to open"}
     return text || "(No response)";
   }
 
-  /** Start the workflow immediately (focus first field) */
   function forceStartWorkflow(formName?: string) {
-    const page = selectedFormToWorkflowPage(formName || selectedForm) || workflowPage;
+    const page =
+      selectedFormToWorkflowPage(formName || selectedForm) || workflowPage;
     const ff = firstFieldForWorkflow(page);
     if (ff) dispatchAction({ type: "SET_FOCUS_FIELD", id: ff });
   }
 
-  /** SEND TEXT */
+  function applyProjectContextToState(data: any) {
+    if (!data?.found || !data?.projectContext) {
+      clearProjectContext();
+      return;
+    }
+
+    const project = data.projectContext.project || {};
+    const inferred = data.projectContext.inferred || {};
+    const companies = Array.isArray(data.projectContext.companies)
+      ? data.projectContext.companies
+      : [];
+    const metrics = Array.isArray(data.projectContext.metrics)
+      ? data.projectContext.metrics
+      : [];
+
+    const location =
+      [project.city, project.state, project.country].filter(Boolean).join(", ") || "—";
+
+    setProjectContext({
+      projectId: project.project_id ?? null,
+      projectName: project.project_name ?? null,
+      projectSummary: inferred.summary ?? null,
+      projectStage: project.project_stage ?? null,
+      projectLocation: location,
+      sectorRoot: inferred.sectorRoot ?? null,
+      coordinationBurden: inferred.coordinationBurden ?? null,
+      reviewSensitivity: inferred.reviewSensitivity ?? null,
+      environment: inferred.environment ?? null,
+      complexity: inferred.complexity ?? null,
+      projectInsights: Array.isArray(inferred.insights) ? inferred.insights : [],
+      projectCompanies: companies,
+      projectMetrics: metrics,
+    });
+  }
+
   async function onSend() {
     const text = input.trim();
     if (!text || busy) return;
@@ -442,16 +699,47 @@ ${firstField || "(none) - if none, ask user which form to open"}
     const next = [...msgs, userMsg];
     setMsgs(next);
 
-    // Form selection hint
+    // quick explainer shortcut
+    if (text.toLowerCase().includes("source ladder")) {
+      const explain = sourceLadderExplainer();
+      setMsgs((p) => [...p, { id: uid(), role: "ai", text: explain }]);
+      await playTTS(explain, "assistant");
+      setBusy(false);
+      return;
+    }
+
+    // NEW: project / context lookup shortcut
+    if (looksLikeProjectQuery(text)) {
+      try {
+        const data = await fetchProjectContext(text);
+        applyProjectContextToState(data);
+
+        const reply = buildProjectAssistantReply(data);
+        setMsgs((p) => [...p, { id: uid(), role: "ai", text: reply }]);
+        await playTTS(reply, pickTTSMode(reply));
+      } catch (e: any) {
+        const errText = `⚠️ Project context error: ${e?.message || "Lookup failed."}`;
+        setMsgs((p) => [...p, { id: uid(), role: "ai", text: errText }]);
+      } finally {
+        setBusy(false);
+      }
+      return;
+    }
+
     const maybeForm = detectSelectedForm(text);
     if (maybeForm) {
       setSelectedForm(maybeForm);
       forceStartWorkflow(maybeForm);
-      // Also add an immediate helpful summary
-      setMsgs((p) => [...p, { id: uid(), role: "ai", text: workflowSummary(selectedFormToWorkflowPage(maybeForm)) }]);
+      setMsgs((p) => [
+        ...p,
+        {
+          id: uid(),
+          role: "ai",
+          text: workflowSummary(selectedFormToWorkflowPage(maybeForm)),
+        },
+      ]);
     }
 
-    // If user says “finish/complete/fill”, force start even if on /chat
     if (userWantsFormCompletion(text)) {
       forceStartWorkflow();
     }
@@ -466,7 +754,6 @@ ${firstField || "(none) - if none, ask user which form to open"}
         const say = String(action.say ?? "").trim();
         const confirm = String(action.confirm ?? "").trim();
 
-        // Never show generic "Updated"
         const shown =
           say ||
           (confirm ? `✅ ${confirm}` : "") ||
@@ -477,18 +764,23 @@ ${firstField || "(none) - if none, ask user which form to open"}
         return;
       }
 
-      // plain text
       const clean = aiRaw.trim() || "…";
       setMsgs((p) => [...p, { id: uid(), role: "ai", text: clean }]);
       await playTTS(clean, pickTTSMode(clean));
     } catch (e: any) {
-      setMsgs((p) => [...p, { id: uid(), role: "ai", text: `⚠️ Error: ${e?.message || "Failed to reach AI."}` }]);
+      setMsgs((p) => [
+        ...p,
+        {
+          id: uid(),
+          role: "ai",
+          text: `⚠️ Error: ${e?.message || "Failed to reach AI."}`,
+        },
+      ]);
     } finally {
       setBusy(false);
     }
   }
 
-  /** VOICE RECORDING */
   function stopRecording() {
     try {
       if (recordTimerRef.current) {
@@ -516,10 +808,18 @@ ${firstField || "(none) - if none, ask user which form to open"}
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
 
-      const mimeCandidates = ["audio/mp4", "audio/webm;codecs=opus", "audio/webm"];
-      const mimeType = mimeCandidates.find((m) => MediaRecorder.isTypeSupported(m)) || "";
+      const mimeCandidates = [
+        "audio/mp4",
+        "audio/webm;codecs=opus",
+        "audio/webm",
+      ];
+      const mimeType =
+        mimeCandidates.find((m) => MediaRecorder.isTypeSupported(m)) || "";
 
-      const mr = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
+      const mr = new MediaRecorder(
+        stream,
+        mimeType ? { mimeType } : undefined
+      );
       mediaRef.current = mr;
 
       const chunks: BlobPart[] = [];
@@ -541,7 +841,10 @@ ${firstField || "(none) - if none, ask user which form to open"}
           return;
         }
 
-        const blob = new Blob(chunks, { type: mr.mimeType || "audio/webm" });
+        const blob = new Blob(chunks, {
+          type: mr.mimeType || "audio/webm",
+        });
+
         if (!blob || blob.size === 0) {
           const msg = "⚠️ No audio captured. Try again.";
           setMsgs((p) => [...p, { id: uid(), role: "ai", text: msg }]);
@@ -553,12 +856,19 @@ ${firstField || "(none) - if none, ask user which form to open"}
           setBusy(true);
 
           const mt = mr.mimeType || blob.type || "";
-          const ext = mt.includes("mp4") ? "m4a" : mt.includes("wav") ? "wav" : "webm";
+          const ext = mt.includes("mp4")
+            ? "m4a"
+            : mt.includes("wav")
+            ? "wav"
+            : "webm";
 
           const formData = new FormData();
           formData.append("file", blob, `voice.${ext}`);
 
-          const sttRes = await fetch("/api/stt", { method: "POST", body: formData });
+          const sttRes = await fetch("/api/stt", {
+            method: "POST",
+            body: formData,
+          });
           const stt = await sttRes.json().catch(() => ({}));
 
           const ok = Boolean(stt?.ok);
@@ -578,11 +888,35 @@ ${firstField || "(none) - if none, ask user which form to open"}
           const next = [...msgs, userMsg];
           setMsgs(next);
 
+          if (transcript.toLowerCase().includes("source ladder")) {
+            const explain = sourceLadderExplainer();
+            setMsgs((p) => [...p, { id: uid(), role: "ai", text: explain }]);
+            await playTTS(explain, "assistant");
+            return;
+          }
+
+          if (looksLikeProjectQuery(transcript)) {
+            const data = await fetchProjectContext(transcript);
+            applyProjectContextToState(data);
+
+            const reply = buildProjectAssistantReply(data);
+            setMsgs((p) => [...p, { id: uid(), role: "ai", text: reply }]);
+            await playTTS(reply, pickTTSMode(reply));
+            return;
+          }
+
           const maybeForm = detectSelectedForm(transcript);
           if (maybeForm) {
             setSelectedForm(maybeForm);
             forceStartWorkflow(maybeForm);
-            setMsgs((p) => [...p, { id: uid(), role: "ai", text: workflowSummary(selectedFormToWorkflowPage(maybeForm)) }]);
+            setMsgs((p) => [
+              ...p,
+              {
+                id: uid(),
+                role: "ai",
+                text: workflowSummary(selectedFormToWorkflowPage(maybeForm)),
+              },
+            ]);
           }
 
           if (userWantsFormCompletion(transcript)) {
@@ -600,6 +934,7 @@ ${firstField || "(none) - if none, ask user which form to open"}
               say ||
               (confirm ? `✅ ${confirm}` : "") ||
               "⚠️ Assistant returned JSON but no 'say'. Check the prompt / model output.";
+
             setMsgs((p) => [...p, { id: uid(), role: "ai", text: shown }]);
             await playTTS(shown, pickTTSMode(shown));
             return;
@@ -608,7 +943,10 @@ ${firstField || "(none) - if none, ask user which form to open"}
           setMsgs((p) => [...p, { id: uid(), role: "ai", text: aiRaw }]);
           await playTTS(aiRaw, pickTTSMode(aiRaw));
         } catch (e: any) {
-          setMsgs((p) => [...p, { id: uid(), role: "ai", text: `⚠️ Voice error: ${e?.message || "Failed."}` }]);
+          setMsgs((p) => [
+            ...p,
+            { id: uid(), role: "ai", text: `⚠️ Voice error: ${e?.message || "Failed."}` },
+          ]);
         } finally {
           setBusy(false);
         }
@@ -618,63 +956,98 @@ ${firstField || "(none) - if none, ask user which form to open"}
       setRecording(true);
 
       setRecordSecs(0);
-      recordTimerRef.current = window.setInterval(() => setRecordSecs((s) => s + 1), 1000) as unknown as number;
+      recordTimerRef.current = window.setInterval(
+        () => setRecordSecs((s) => s + 1),
+        1000
+      ) as unknown as number;
     } catch (e: any) {
-      setMsgs((p) => [...p, { id: uid(), role: "ai", text: `⚠️ Mic permission error: ${e?.message || "Denied."}` }]);
+      setMsgs((p) => [
+        ...p,
+        {
+          id: uid(),
+          role: "ai",
+          text: `⚠️ Mic permission error: ${e?.message || "Denied."}`,
+        },
+      ]);
       setRecording(false);
     }
   }
 
-  /** WEATHER */
   async function onGetWeather() {
     if (busy) return;
     setBusy(true);
 
     try {
       const pos = await new Promise<GeolocationPosition>((resolve, reject) => {
-        navigator.geolocation.getCurrentPosition(resolve, reject, { enableHighAccuracy: true, timeout: 9000 });
+        navigator.geolocation.getCurrentPosition(resolve, reject, {
+          enableHighAccuracy: true,
+          timeout: 9000,
+        });
       });
 
       const lat = pos.coords.latitude;
       const lon = pos.coords.longitude;
 
-      const r = await fetch(`/api/weather?lat=${encodeURIComponent(lat)}&lon=${encodeURIComponent(lon)}`);
-      if (!r.ok) throw new Error("Weather fetch failed");
+      const r = await fetch(
+        `/api/weather?lat=${encodeURIComponent(lat)}&lon=${encodeURIComponent(
+          lon
+        )}`
+      );
+      if (!r.ok) throw new Error("Site conditions fetch failed");
 
       const data = await r.json().catch(() => ({}));
       const c = data?.current;
       const m = data?.mapped;
 
-      const rawLine = `${m?.icon ?? ""} ${m?.label ?? "Weather"} • ${c?.temperature_2m ?? "?"}°C • wind ${
-        c?.wind_speed_10m ?? "?"
-      } km/h • precip ${c?.precipitation ?? "?"} mm`;
+      const rawLine = `${m?.icon ?? ""} ${m?.label ?? "Site conditions"} • ${
+        c?.temperature_2m ?? "?"
+      }°C • wind ${c?.wind_speed_10m ?? "?"} km/h • precip ${
+        c?.precipitation ?? "?"
+      } mm`;
 
       setWeatherSummary(rawLine);
       dispatchAction({ type: "SET_WEATHER", text: rawLine });
 
       const updatedNarrative =
-        narrative === "—" ? `Weather at time of report: ${rawLine}` : `${narrative}\nWeather at time of report: ${rawLine}`;
+        narrative === "—"
+          ? `Site conditions at time of report: ${rawLine}`
+          : `${narrative}\nSite conditions at time of report: ${rawLine}`;
+
       setNarrative(updatedNarrative);
       dispatchAction({ type: "SET_NARRATIVE", text: updatedNarrative });
 
-      setMsgs((p) => [...p, { id: uid(), role: "ai", text: `Weather update: ${rawLine}` }]);
-      await playTTS(`Weather update. ${rawLine}`, "assistant");
+      setMsgs((p) => [
+        ...p,
+        { id: uid(), role: "ai", text: `Site conditions update: ${rawLine}` },
+      ]);
+      await playTTS(`Site conditions update. ${rawLine}`, "assistant");
     } catch (e: any) {
-      setMsgs((p) => [...p, { id: uid(), role: "ai", text: `⚠️ Weather error: ${e?.message || "Unable to access location."}` }]);
+      setMsgs((p) => [
+        ...p,
+        {
+          id: uid(),
+          role: "ai",
+          text: `⚠️ Site conditions error: ${e?.message || "Unable to access location."}`,
+        },
+      ]);
     } finally {
       setBusy(false);
     }
   }
 
-  /** UI */
   return (
     <Card className="flex h-[70dvh] flex-col">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <div className="text-sm font-medium">Assistant</div>
+          <div className="text-sm font-medium">Safety Analyst</div>
           <div className="text-xs text-zinc-400">
-            JSON Action Agent • STT (fallback-safe) • TTS • Page: {activePage}
+            GLIP assistant • construction safety review • source-aware reasoning • Page: {activePage}
             {activePage === "chat" && selectedForm ? ` • Workflow: ${workflowPage}` : ""}
+          </div>
+
+          <div className="mt-2 flex items-center gap-2 text-[11px] text-zinc-500">
+            <ShieldCheck className="h-3.5 w-3.5" />
+            Uses project context, plain-language explanations, and source ladder support levels.
           </div>
         </div>
 
@@ -695,27 +1068,51 @@ ${firstField || "(none) - if none, ask user which form to open"}
             onChange={(e) => setModel(e.target.value)}
             placeholder="Model override (optional)"
             className="h-9 w-[190px] rounded-xl bg-white/5 px-3 text-xs text-zinc-100 placeholder:text-zinc-500 shadow-[0_0_0_1px_rgba(255,255,255,.08)] outline-none"
-            title="OpenRouter model string e.g. openai/gpt-4o-mini"
+            title="Model override"
           />
 
-          <Button variant="ghost" size="sm" onClick={() => setSpeak((v) => !v)} title={speak ? "Disable voice" : "Enable voice"}>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => setSpeak((v) => !v)}
+            title={speak ? "Disable voice" : "Enable voice"}
+          >
             {speak ? <Volume2 className="h-4 w-4" /> : <VolumeX className="h-4 w-4" />}
             <span className="ml-2 hidden sm:inline">{speak ? "Voice On" : "Voice Off"}</span>
           </Button>
 
-          <Button variant="ghost" size="sm" onClick={onGetWeather} disabled={busy} title="Get weather from your location">
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={onGetWeather}
+            disabled={busy}
+            title="Get site conditions from your location"
+          >
             <CloudSun className="h-4 w-4" />
-            <span className="ml-2 hidden sm:inline">Weather</span>
+            <span className="ml-2 hidden sm:inline">Site Conditions</span>
           </Button>
         </div>
       </div>
 
       <div className="mt-3 rounded-2xl bg-black/25 p-3 text-xs text-zinc-200 ring-1 ring-white/5">
-        <div className="text-zinc-300/70">Heard</div>
-        <div className="mt-1 min-h-[18px]">
-          {lastTranscript ? <span className="text-zinc-100">{lastTranscript}</span> : <span className="text-zinc-400">—</span>}
+        <div className="flex items-center justify-between">
+          <div className="text-zinc-300/70">Heard</div>
+          <div className="text-[10px] text-zinc-500">
+            Try: “Explain the source ladder” or “Ontario hospital projects”
+          </div>
         </div>
-        {sttError ? <div className="mt-2 text-[11px] text-amber-300/80">{sttError}</div> : null}
+
+        <div className="mt-1 min-h-[18px]">
+          {lastTranscript ? (
+            <span className="text-zinc-100">{lastTranscript}</span>
+          ) : (
+            <span className="text-zinc-400">—</span>
+          )}
+        </div>
+
+        {sttError ? (
+          <div className="mt-2 text-[11px] text-amber-300/80">{sttError}</div>
+        ) : null}
       </div>
 
       <div className="mt-3 flex-1 space-y-3 overflow-auto rounded-2xl bg-black/30 p-3 shadow-inner">
@@ -736,16 +1133,24 @@ ${firstField || "(none) - if none, ask user which form to open"}
           <div className="max-w-[85%] rounded-2xl bg-white/5 px-3 py-2 text-sm text-zinc-200">
             <span className="inline-flex items-center gap-2">
               <Loader2 className="h-4 w-4 animate-spin" />
-              Thinking…
+              Analyzing…
             </span>
           </div>
         )}
       </div>
 
       <div className="mt-3 flex items-center gap-2">
-        <Button variant="ghost" size="sm" onClick={toggleRecording} disabled={busy} title={recording ? "Stop recording" : "Record voice"}>
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={toggleRecording}
+          disabled={busy}
+          title={recording ? "Stop recording" : "Record voice"}
+        >
           {recording ? <Square className="h-4 w-4" /> : <Mic className="h-4 w-4" />}
-          <span className="ml-2 hidden sm:inline">{recording ? `Recording ${recordSecs}s` : "Voice"}</span>
+          <span className="ml-2 hidden sm:inline">
+            {recording ? `Recording ${recordSecs}s` : "Voice"}
+          </span>
         </Button>
 
         <input
@@ -754,7 +1159,7 @@ ${firstField || "(none) - if none, ask user which form to open"}
           onKeyDown={(e) => {
             if (e.key === "Enter") onSend();
           }}
-          placeholder="Type a message…"
+          placeholder="Ask about a project, hazard, near-miss, trend, or source question…"
           className="h-11 flex-1 rounded-2xl bg-white/5 px-4 text-sm text-zinc-100 placeholder:text-zinc-500 shadow-[0_0_0_1px_rgba(255,255,255,.08)] outline-none focus:shadow-[0_0_0_1px_rgba(56,189,248,.35)]"
         />
 

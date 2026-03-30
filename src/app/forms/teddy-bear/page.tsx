@@ -1,11 +1,12 @@
 /*
 ===========================
 FILE: /app/forms/teddy-bear/page.tsx
-Form 2 UI (AI focus + AI fill enabled)
+Form 2 UI (Construction quick-switch intake + AI preview)
 ===========================
 */
 "use client";
 
+import { useMemo, useState } from "react";
 import { AppShell } from "@/src/app/components/shell/AppShell";
 import { Card } from "@/src/app/components/ui/Card";
 import { Field } from "@/src/app/components/ui/Field";
@@ -13,123 +14,660 @@ import { Select } from "@/src/app/components/ui/Select";
 import { Button } from "@/src/app/components/ui/Button";
 import { useAppState } from "@/src/app/components/state/AppState";
 
+type FormMode =
+  | "tools"
+  | "hazard"
+  | "pretask"
+  | "ppe"
+  | "incident";
+
+type AiMode = "idle" | "loading" | "done";
+
+const MODES: { key: FormMode; label: string; subtitle: string }[] = [
+  {
+    key: "tools",
+    label: "Tool & Equipment Review",
+    subtitle: "Log equipment issues and generate source-aware guidance.",
+  },
+  {
+    key: "hazard",
+    label: "Hazard Observation",
+    subtitle: "Capture field hazards, exposure, and immediate controls.",
+  },
+  {
+    key: "pretask",
+    label: "Pre-Task Safety Review",
+    subtitle: "Review work scope, controls, and governing sources before work starts.",
+  },
+  {
+    key: "ppe",
+    label: "PPE / Fall Protection Check",
+    subtitle: "Check required PPE, anchor / tie-off, and compliance status.",
+  },
+  {
+    key: "incident",
+    label: "Incident / Near-Miss Intake",
+    subtitle: "Record event facts, severity, and first actions taken.",
+  },
+];
+
+const ENDPOINT = "/api/llm";
+
 export default function TeddyBearFormPage() {
   const { dispatchAction, getFieldValue } = useAppState();
+  const [mode, setMode] = useState<FormMode>("tools");
+  const [aiMode, setAiMode] = useState<AiMode>("idle");
+  const [aiText, setAiText] = useState("");
+  const [aiError, setAiError] = useState("");
+
+  const prefix = `form2.${mode}` as const;
+
+  const title = useMemo(() => {
+    return MODES.find((m) => m.key === mode) || MODES[0];
+  }, [mode]);
+
+  function collectFormValues(modeKey: FormMode): Record<string, string> {
+    const p = `form2.${modeKey}`;
+
+    if (modeKey === "tools") {
+      return {
+        datetime: getFieldValue(`${p}.datetime`) || "",
+        area: getFieldValue(`${p}.area`) || "",
+        reporter: getFieldValue(`${p}.reporter`) || "",
+        equipmentName: getFieldValue(`${p}.equipmentName`) || "",
+        assetId: getFieldValue(`${p}.assetId`) || "",
+        manufacturer: getFieldValue(`${p}.manufacturer`) || "",
+        model: getFieldValue(`${p}.model`) || "",
+        issueCategory: getFieldValue(`${p}.issueCategory`) || "",
+        severity: getFieldValue(`${p}.severity`) || "",
+        removedFromService: getFieldValue(`${p}.removedFromService`) || "",
+        issueDescription: getFieldValue(`${p}.issueDescription`) || "",
+      };
+    }
+
+    if (modeKey === "hazard") {
+      return {
+        datetime: getFieldValue(`${p}.datetime`) || "",
+        location: getFieldValue(`${p}.location`) || "",
+        hazardType: getFieldValue(`${p}.hazardType`) || "",
+        observation: getFieldValue(`${p}.observation`) || "",
+        riskLevel: getFieldValue(`${p}.riskLevel`) || "",
+        escalated: getFieldValue(`${p}.escalated`) || "",
+        immediateAction: getFieldValue(`${p}.immediateAction`) || "",
+      };
+    }
+
+    if (modeKey === "pretask") {
+      return {
+        taskName: getFieldValue(`${p}.taskName`) || "",
+        workArea: getFieldValue(`${p}.workArea`) || "",
+        crewLead: getFieldValue(`${p}.crewLead`) || "",
+        permitRequired: getFieldValue(`${p}.permitRequired`) || "",
+        stopWorkAuthority: getFieldValue(`${p}.stopWorkAuthority`) || "",
+        criticalControls: getFieldValue(`${p}.criticalControls`) || "",
+      };
+    }
+
+    if (modeKey === "ppe") {
+      return {
+        workType: getFieldValue(`${p}.workType`) || "",
+        area: getFieldValue(`${p}.area`) || "",
+        ppeStatus: getFieldValue(`${p}.ppeStatus`) || "",
+        fallProtection: getFieldValue(`${p}.fallProtection`) || "",
+        anchorVerified: getFieldValue(`${p}.anchorVerified`) || "",
+        notes: getFieldValue(`${p}.notes`) || "",
+      };
+    }
+
+    return {
+      eventType: getFieldValue(`${p}.eventType`) || "",
+      severity: getFieldValue(`${p}.severity`) || "",
+      location: getFieldValue(`${p}.location`) || "",
+      summary: getFieldValue(`${p}.summary`) || "",
+      medicalAid: getFieldValue(`${p}.medicalAid`) || "",
+      workStopped: getFieldValue(`${p}.workStopped`) || "",
+      initialActions: getFieldValue(`${p}.initialActions`) || "",
+    };
+  }
+
+  function makeSystemPrompt(modeKey: FormMode) {
+    return `
+You are a construction safety intake assistant.
+
+Your task:
+- review the submitted form
+- produce a concise operational summary
+- identify immediate priorities
+- suggest next actions
+- be practical and field-oriented
+
+Return plain text with these sections:
+1. Summary
+2. Immediate Concerns
+3. Recommended Next Actions
+4. Suggested Supervisor / Record Note
+
+Keep it concise and usable.
+Do not invent laws or quotes.
+`.trim();
+  }
+
+  function makeUserPrompt(modeKey: FormMode, values: Record<string, string>) {
+    const modeLabel = MODES.find((m) => m.key === modeKey)?.label || modeKey;
+    return `
+Form Mode: ${modeLabel}
+
+Submitted Values:
+${JSON.stringify(values, null, 2)}
+
+Generate an AI preview for this intake.
+`.trim();
+  }
+
+  async function generateAiPreview() {
+    const values = collectFormValues(mode);
+    setAiMode("loading");
+    setAiError("");
+    setAiText("");
+
+    try {
+      const response = await fetch(ENDPOINT, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          provider: "auto",
+          messages: [
+            { role: "system", content: makeSystemPrompt(mode) },
+            { role: "user", content: makeUserPrompt(mode, values) },
+          ],
+        }),
+      });
+
+      const data = await response.json();
+
+      if (!data?.ok || !data?.text) {
+        throw new Error(data?.error || "AI preview failed");
+      }
+
+      setAiText(String(data.text).trim());
+      setAiMode("done");
+
+      dispatchAction({
+        type: "APPEND_CHAT_NOTE",
+        text: `🤖 AI preview generated for ${mode}.`,
+      });
+    } catch (error) {
+      setAiError(error instanceof Error ? error.message : "AI preview failed.");
+      setAiMode("done");
+    }
+  }
 
   return (
     <AppShell>
-      <div className="grid gap-4 lg:grid-cols-2">
-        {/* LEFT FORM */}
+      <div className="space-y-4">
         <Card>
-          <h2 className="text-lg font-semibold">Form 2 — Teddy Bear Tracking</h2>
-          <p className="mt-1 text-sm text-zinc-400">
-            Voice + AI can now focus and fill this form.
-          </p>
+          <div className="flex flex-col gap-4">
+            <div>
+              <h2 className="text-lg font-semibold">Form 2 — Safety Intake Workspace</h2>
+              <p className="mt-1 text-sm text-zinc-400">
+                Switch between five quick intake modes for construction teams.
+              </p>
+            </div>
 
-          <div className="mt-5 space-y-5">
-            <Section title="Distribution">
-              <Field id="teddy.datetime" label="Date & Time" placeholder="Auto" />
-            </Section>
+            <div className="flex flex-wrap gap-2">
+              {MODES.map((m) => {
+                const active = m.key === mode;
+                return (
+                  <button
+                    key={m.key}
+                    type="button"
+                    onClick={() => setMode(m.key)}
+                    className={[
+                      "rounded-full px-3 py-2 text-xs transition",
+                      active
+                        ? "bg-sky-500/20 text-sky-200 ring-1 ring-sky-400/30"
+                        : "bg-white/5 text-zinc-300 ring-1 ring-white/10 hover:bg-white/10",
+                    ].join(" ")}
+                  >
+                    {m.label}
+                  </button>
+                );
+              })}
+            </div>
 
-            <Section title="Primary Medic (Required)">
-              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                <Field id="teddy.primaryFirst" label="First name" placeholder="First" />
-                <Field id="teddy.primaryLast" label="Last name" placeholder="Last" />
-              </div>
+            <div className="rounded-2xl bg-black/20 p-4 shadow-inner">
+              <div className="text-sm font-medium text-zinc-100">{title.label}</div>
+              <div className="mt-1 text-xs text-zinc-400">{title.subtitle}</div>
+            </div>
+          </div>
+        </Card>
 
-              <Field id="teddy.primaryMedicNumber" label="Medic number" placeholder="e.g., 10452" />
-            </Section>
+        <div className="grid gap-4 lg:grid-cols-2">
+          <Card>
+            {mode === "tools" ? <ToolsForm prefix={prefix} /> : null}
+            {mode === "hazard" ? <HazardForm prefix={prefix} /> : null}
+            {mode === "pretask" ? <PreTaskForm prefix={prefix} /> : null}
+            {mode === "ppe" ? <PPEForm prefix={prefix} /> : null}
+            {mode === "incident" ? <IncidentForm prefix={prefix} /> : null}
 
-            <Section title="Second Medic (Optional)">
-              <p className="text-xs text-zinc-400">Phase 1: always visible. Phase 2: toggle show/hide.</p>
-
-              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                <Field id="teddy.secondFirst" label="First name" placeholder="First" />
-                <Field id="teddy.secondLast" label="Last name" placeholder="Last" />
-              </div>
-
-              <Field id="teddy.secondMedicNumber" label="Medic number" placeholder="e.g., 10453" />
-            </Section>
-
-            <Section title="Recipient">
-              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                <Field id="teddy.age" label="Age" placeholder="Age" />
-
-                <Select
-                  id="teddy.gender"
-                  label="Gender"
-                  placeholder="Select"
-                  options={["Male", "Female", "Other", "Prefer not to say"]}
-                />
-              </div>
-
-              <Select
-                id="teddy.recipientType"
-                label="Recipient type"
-                placeholder="Select"
-                options={["Patient", "Family", "Bystander", "Other"]}
-              />
-            </Section>
-
-            <div className="flex flex-col gap-2 sm:flex-row sm:justify-end">
+            <div className="mt-6 flex flex-col gap-2 sm:flex-row sm:justify-end">
               <Button
-                variant="ghost"
-                onClick={() => dispatchAction({ type: "CLEAR_FORM", form: "teddy" })}
-              >
-                Clear
+            variant="ghost"
+            onClick={() => dispatchAction({ type: "CLEAR_FORM", form: "teddy" as any })}
+          >
+            Clear
+          </Button>
+              <Button variant="primary" onClick={generateAiPreview}>
+                {aiMode === "loading" ? "Generating..." : "Generate AI Preview"}
               </Button>
-              <Button variant="primary">Generate Email Preview</Button>
             </div>
-          </div>
-        </Card>
+          </Card>
 
-        {/* RIGHT PREVIEW */}
-        <Card>
-          <h3 className="text-sm font-medium">Submission Preview</h3>
-          <p className="mt-1 text-xs text-zinc-400">In Phase 2, this becomes a PDF + XML bundle.</p>
+          <Card>
+            <h3 className="text-sm font-medium">Submission Preview</h3>
+            <p className="mt-1 text-xs text-zinc-400">
+              Live preview for the currently selected intake mode.
+            </p>
 
-          <div className="mt-4 rounded-2xl bg-black/30 p-4 text-sm text-zinc-200 shadow-inner">
-            <div className="grid grid-cols-2 gap-3">
-              <Preview k="Date/Time" v={getFieldValue("teddy.datetime") || "Auto"} />
-              <Preview k="Recipient" v={getFieldValue("teddy.recipientType") || "—"} />
-              <Preview k="Age" v={getFieldValue("teddy.age") || "—"} />
-              <Preview k="Gender" v={getFieldValue("teddy.gender") || "—"} />
-            </div>
+            <div className="mt-4 rounded-2xl bg-black/30 p-4 text-sm text-zinc-200 shadow-inner">
+              {mode === "tools" ? (
+                <div className="space-y-4">
+                  <PreviewGrid
+                    items={[
+                      ["Project / Area", getFieldValue(`${prefix}.area`) || "—"],
+                      ["Equipment", getFieldValue(`${prefix}.equipmentName`) || "—"],
+                      ["Asset ID", getFieldValue(`${prefix}.assetId`) || "—"],
+                      ["Severity", getFieldValue(`${prefix}.severity`) || "—"],
+                    ]}
+                  />
+                  <PreviewBlock title="Issue">
+                    {getFieldValue(`${prefix}.issueDescription`) || "—"}
+                  </PreviewBlock>
+                </div>
+              ) : null}
 
-            <div className="mt-4">
-              <div className="text-xs uppercase tracking-wide text-zinc-500">Medic</div>
-              <div className="mt-1 text-zinc-300">
-                {formatMedic(
-                  getFieldValue("teddy.primaryFirst"),
-                  getFieldValue("teddy.primaryLast"),
-                  getFieldValue("teddy.primaryMedicNumber")
-                )}
+              {mode === "hazard" ? (
+                <div className="space-y-4">
+                  <PreviewGrid
+                    items={[
+                      ["Location", getFieldValue(`${prefix}.location`) || "—"],
+                      ["Hazard Type", getFieldValue(`${prefix}.hazardType`) || "—"],
+                      ["Risk Level", getFieldValue(`${prefix}.riskLevel`) || "—"],
+                      ["Escalated", getFieldValue(`${prefix}.escalated`) || "—"],
+                    ]}
+                  />
+                  <PreviewBlock title="Observation">
+                    {getFieldValue(`${prefix}.observation`) || "—"}
+                  </PreviewBlock>
+                </div>
+              ) : null}
+
+              {mode === "pretask" ? (
+                <div className="space-y-4">
+                  <PreviewGrid
+                    items={[
+                      ["Task", getFieldValue(`${prefix}.taskName`) || "—"],
+                      ["Crew Lead", getFieldValue(`${prefix}.crewLead`) || "—"],
+                      ["Work Area", getFieldValue(`${prefix}.workArea`) || "—"],
+                      ["Permit Required", getFieldValue(`${prefix}.permitRequired`) || "—"],
+                    ]}
+                  />
+                  <PreviewBlock title="Critical Controls">
+                    {getFieldValue(`${prefix}.criticalControls`) || "—"}
+                  </PreviewBlock>
+                </div>
+              ) : null}
+
+              {mode === "ppe" ? (
+                <div className="space-y-4">
+                  <PreviewGrid
+                    items={[
+                      ["Work Type", getFieldValue(`${prefix}.workType`) || "—"],
+                      ["PPE Status", getFieldValue(`${prefix}.ppeStatus`) || "—"],
+                      ["Fall Protection", getFieldValue(`${prefix}.fallProtection`) || "—"],
+                      ["Anchor Verified", getFieldValue(`${prefix}.anchorVerified`) || "—"],
+                    ]}
+                  />
+                  <PreviewBlock title="Notes">
+                    {getFieldValue(`${prefix}.notes`) || "—"}
+                  </PreviewBlock>
+                </div>
+              ) : null}
+
+              {mode === "incident" ? (
+                <div className="space-y-4">
+                  <PreviewGrid
+                    items={[
+                      ["Event Type", getFieldValue(`${prefix}.eventType`) || "—"],
+                      ["Severity", getFieldValue(`${prefix}.severity`) || "—"],
+                      ["Location", getFieldValue(`${prefix}.location`) || "—"],
+                      ["Medical Aid", getFieldValue(`${prefix}.medicalAid`) || "—"],
+                    ]}
+                  />
+                  <PreviewBlock title="Event Summary">
+                    {getFieldValue(`${prefix}.summary`) || "—"}
+                  </PreviewBlock>
+                </div>
+              ) : null}
+
+              <div className="mt-6 border-t border-white/10 pt-4">
+                <div className="text-xs uppercase tracking-wide text-zinc-500">AI Preview</div>
+
+                {aiMode === "idle" ? (
+                  <div className="mt-2 text-zinc-400">
+                    Generate an AI preview to get a concise summary and next steps.
+                  </div>
+                ) : null}
+
+                {aiMode === "loading" ? (
+                  <div className="mt-2 text-zinc-300">Generating AI preview…</div>
+                ) : null}
+
+                {aiError ? (
+                  <div className="mt-2 rounded-xl border border-amber-400/20 bg-amber-500/10 p-3 text-xs text-amber-100">
+                    {aiError}
+                  </div>
+                ) : null}
+
+                {aiText ? (
+                  <div className="mt-3 whitespace-pre-wrap rounded-2xl bg-white/5 p-4 text-sm leading-7 text-zinc-200 shadow-[0_0_0_1px_rgba(255,255,255,.08)]">
+                    {aiText}
+                  </div>
+                ) : null}
               </div>
 
-              <div className="mt-3 text-xs uppercase tracking-wide text-zinc-500">Second Medic</div>
-              <div className="mt-1 text-zinc-300">
-                {formatMedic(
-                  getFieldValue("teddy.secondFirst"),
-                  getFieldValue("teddy.secondLast"),
-                  getFieldValue("teddy.secondMedicNumber")
-                )}
+              <div className="mt-4 text-xs text-zinc-500">
+                Export targets: AI summary, Email, PDF, report feed
               </div>
             </div>
-
-            <div className="mt-4 text-xs text-zinc-500">Export targets: Email, PDF, XML</div>
-          </div>
-        </Card>
+          </Card>
+        </div>
       </div>
     </AppShell>
   );
 }
 
-function formatMedic(first: string, last: string, num: string) {
-  const name = [first, last].filter(Boolean).join(" ").trim();
-  const id = (num || "").trim();
-  if (!name && !id) return "—";
-  if (name && id) return `${name} (#${id})`;
-  return name || (id ? `#${id}` : "—");
+function ToolsForm({ prefix }: { prefix: string }) {
+  return (
+    <>
+      <h2 className="text-lg font-semibold">Tool & Equipment Review</h2>
+      <p className="mt-1 text-sm text-zinc-400">
+        Capture equipment issues, severity, and source-backed next steps.
+      </p>
+
+      <div className="mt-5 space-y-5">
+        <Section title="Context">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <Field id={`${prefix}.datetime`} label="Date & time" placeholder="Auto / now" />
+            <Field id={`${prefix}.area`} label="Project / area" placeholder="Level 3, east wing" />
+          </div>
+          <Field id={`${prefix}.reporter`} label="Reporter" placeholder="Supervisor / worker name" />
+        </Section>
+
+        <Section title="Equipment">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <Field id={`${prefix}.equipmentName`} label="Tool / equipment" placeholder="Scissor lift" />
+            <Field id={`${prefix}.assetId`} label="Asset ID / serial" placeholder="EQ-2048" />
+          </div>
+
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <Field id={`${prefix}.manufacturer`} label="Manufacturer" placeholder="Genie" />
+            <Field id={`${prefix}.model`} label="Model" placeholder="GS-1930" />
+          </div>
+
+          <Select
+            id={`${prefix}.issueCategory`}
+            label="Issue category"
+            placeholder="Select"
+            options={[
+              "Damage",
+              "Missing guard",
+              "Electrical",
+              "Hydraulic",
+              "Inspection overdue",
+              "Improper use",
+              "Lockout / tagout",
+              "Other",
+            ]}
+          />
+        </Section>
+
+        <Section title="Assessment">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <Select
+              id={`${prefix}.severity`}
+              label="Severity"
+              placeholder="Select"
+              options={["Low", "Medium", "High", "Remove from service"]}
+            />
+            <Select
+              id={`${prefix}.removedFromService`}
+              label="Removed from service?"
+              placeholder="Select"
+              options={["Yes", "No", "Pending"]}
+            />
+          </div>
+
+          <Field
+            id={`${prefix}.issueDescription`}
+            label="Issue description"
+            placeholder="Describe the condition, observed risk, and immediate concern"
+          />
+        </Section>
+      </div>
+    </>
+  );
+}
+
+function HazardForm({ prefix }: { prefix: string }) {
+  return (
+    <>
+      <h2 className="text-lg font-semibold">Hazard Observation</h2>
+      <p className="mt-1 text-sm text-zinc-400">
+        Log a field hazard, exposure level, and immediate controls.
+      </p>
+
+      <div className="mt-5 space-y-5">
+        <Section title="Observation">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <Field id={`${prefix}.datetime`} label="Date & time" placeholder="Auto / now" />
+            <Field id={`${prefix}.location`} label="Location" placeholder="Stair tower B" />
+          </div>
+
+          <Select
+            id={`${prefix}.hazardType`}
+            label="Hazard type"
+            placeholder="Select"
+            options={[
+              "Slip / trip",
+              "Fall exposure",
+              "Struck-by",
+              "Electrical",
+              "Housekeeping",
+              "Excavation",
+              "Traffic / mobile plant",
+              "Other",
+            ]}
+          />
+
+          <Field
+            id={`${prefix}.observation`}
+            label="Observation"
+            placeholder="Describe what was observed"
+          />
+        </Section>
+
+        <Section title="Risk & action">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <Select
+              id={`${prefix}.riskLevel`}
+              label="Risk level"
+              placeholder="Select"
+              options={["Low", "Medium", "High", "Critical"]}
+            />
+            <Select
+              id={`${prefix}.escalated`}
+              label="Escalated?"
+              placeholder="Select"
+              options={["Yes", "No"]}
+            />
+          </div>
+
+          <Field
+            id={`${prefix}.immediateAction`}
+            label="Immediate action taken"
+            placeholder="Stopped work, barricaded area, notified supervisor"
+          />
+        </Section>
+      </div>
+    </>
+  );
+}
+
+function PreTaskForm({ prefix }: { prefix: string }) {
+  return (
+    <>
+      <h2 className="text-lg font-semibold">Pre-Task Safety Review</h2>
+      <p className="mt-1 text-sm text-zinc-400">
+        Review task scope, permits, and critical controls before work starts.
+      </p>
+
+      <div className="mt-5 space-y-5">
+        <Section title="Task">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <Field id={`${prefix}.taskName`} label="Task" placeholder="Install guardrails" />
+            <Field id={`${prefix}.workArea`} label="Work area" placeholder="Roof edge zone" />
+          </div>
+          <Field id={`${prefix}.crewLead`} label="Crew lead" placeholder="Lead hand / foreperson" />
+        </Section>
+
+        <Section title="Controls">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <Select
+              id={`${prefix}.permitRequired`}
+              label="Permit required"
+              placeholder="Select"
+              options={["Yes", "No", "Unknown"]}
+            />
+            <Select
+              id={`${prefix}.stopWorkAuthority`}
+              label="Stop-work reviewed"
+              placeholder="Select"
+              options={["Yes", "No"]}
+            />
+          </div>
+
+          <Field
+            id={`${prefix}.criticalControls`}
+            label="Critical controls"
+            placeholder="List top controls for the task"
+          />
+        </Section>
+      </div>
+    </>
+  );
+}
+
+function PPEForm({ prefix }: { prefix: string }) {
+  return (
+    <>
+      <h2 className="text-lg font-semibold">PPE / Fall Protection Check</h2>
+      <p className="mt-1 text-sm text-zinc-400">
+        Confirm PPE readiness and fall protection setup before exposure work.
+      </p>
+
+      <div className="mt-5 space-y-5">
+        <Section title="Work context">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <Field id={`${prefix}.workType`} label="Work type" placeholder="Roofing / steel / access" />
+            <Field id={`${prefix}.area`} label="Area" placeholder="North elevation" />
+          </div>
+        </Section>
+
+        <Section title="Check status">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <Select
+              id={`${prefix}.ppeStatus`}
+              label="PPE status"
+              placeholder="Select"
+              options={["Complete", "Incomplete", "Deficient"]}
+            />
+            <Select
+              id={`${prefix}.fallProtection`}
+              label="Fall protection"
+              placeholder="Select"
+              options={["Required", "Not required", "In place", "Deficient"]}
+            />
+          </div>
+
+          <Select
+            id={`${prefix}.anchorVerified`}
+            label="Anchor / tie-off verified"
+            placeholder="Select"
+            options={["Yes", "No", "N/A"]}
+          />
+
+          <Field id={`${prefix}.notes`} label="Notes" placeholder="Record missing or deficient items" />
+        </Section>
+      </div>
+    </>
+  );
+}
+
+function IncidentForm({ prefix }: { prefix: string }) {
+  return (
+    <>
+      <h2 className="text-lg font-semibold">Incident / Near-Miss Intake</h2>
+      <p className="mt-1 text-sm text-zinc-400">
+        Record event facts, severity, and immediate response.
+      </p>
+
+      <div className="mt-5 space-y-5">
+        <Section title="Event">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <Select
+              id={`${prefix}.eventType`}
+              label="Event type"
+              placeholder="Select"
+              options={["Near miss", "First aid", "Medical aid", "Property damage", "Recordable", "Other"]}
+            />
+            <Select
+              id={`${prefix}.severity`}
+              label="Severity"
+              placeholder="Select"
+              options={["Low", "Moderate", "High", "Critical"]}
+            />
+          </div>
+
+          <Field id={`${prefix}.location`} label="Location" placeholder="Laydown yard / floor / zone" />
+          <Field id={`${prefix}.summary`} label="Event summary" placeholder="Describe what happened" />
+        </Section>
+
+        <Section title="Immediate response">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <Select
+              id={`${prefix}.medicalAid`}
+              label="Medical aid"
+              placeholder="Select"
+              options={["Yes", "No", "Unknown"]}
+            />
+            <Select
+              id={`${prefix}.workStopped`}
+              label="Work stopped"
+              placeholder="Select"
+              options={["Yes", "No"]}
+            />
+          </div>
+
+          <Field
+            id={`${prefix}.initialActions`}
+            label="Initial actions"
+            placeholder="Secure area, notify supervisor, preserve scene"
+          />
+        </Section>
+      </div>
+    </>
+  );
 }
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
@@ -138,6 +676,25 @@ function Section({ title, children }: { title: string; children: React.ReactNode
       <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-zinc-400">{title}</div>
       <div className="space-y-3">{children}</div>
     </section>
+  );
+}
+
+function PreviewGrid({ items }: { items: [string, string][] }) {
+  return (
+    <div className="grid grid-cols-2 gap-3">
+      {items.map(([k, v]) => (
+        <Preview key={k} k={k} v={v} />
+      ))}
+    </div>
+  );
+}
+
+function PreviewBlock({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <div>
+      <div className="text-xs uppercase tracking-wide text-zinc-500">{title}</div>
+      <div className="mt-1 text-zinc-300">{children}</div>
+    </div>
   );
 }
 
