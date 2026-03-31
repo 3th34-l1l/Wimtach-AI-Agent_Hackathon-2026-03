@@ -259,11 +259,11 @@ async function fetchProjectContext(query: string) {
   const r = await fetch(`/api/chat-context?q=${encodeURIComponent(query)}`);
   const data = await r.json().catch(() => ({}));
 
-  if (!r.ok) {
-    throw new Error(data?.error || "Failed to fetch project context");
-  }
-
-  return data;
+  return {
+    ok: r.ok,
+    status: r.status,
+    data,
+  };
 }
 
 function buildProjectAssistantReply(data: any) {
@@ -273,54 +273,39 @@ function buildProjectAssistantReply(data: any) {
 
   const project = data.projectContext.project || {};
   const inferred = data.projectContext.inferred || {};
+  const matches = Array.isArray(data.matches) ? data.matches : [];
+  const alternates = matches
+    .slice(1, 3)
+    .map((m: any) => m.project_name)
+    .filter(Boolean);
+
   const companyCount = Array.isArray(data.projectContext.companies)
     ? data.projectContext.companies.length
     : 0;
 
-  const alternates = Array.isArray(data.matches)
-    ? data.matches.slice(1, 3).map((m: any) => m.project_name).filter(Boolean)
-    : [];
+  const metricCount = Array.isArray(data.projectContext.metrics)
+    ? data.projectContext.metrics.length
+    : 0;
 
-  const plainMeaning = [
-    project.project_stage
-      ? `It appears to be in the ${String(project.project_stage).toLowerCase()} stage`
-      : null,
-    project.construction_type
-      ? `and is classified as ${String(project.construction_type).toLowerCase()} work`
-      : null,
-    project.location_type
-      ? `in an ${String(project.location_type).toLowerCase()} setting`
-      : null,
-  ]
-    .filter(Boolean)
-    .join(" ");
-
-  const whySignals = [
-    companyCount
-      ? `The database found ${companyCount} linked companies, so the system is treating coordination complexity as ${String(
-          inferred.coordinationBurden || "unknown"
-        ).toLowerCase()}.`
-      : null,
-    inferred.reviewSensitivity
-      ? `Because of the current project stage, review sensitivity is being treated as ${String(
-          inferred.reviewSensitivity
-        ).toLowerCase()}.`
-      : null,
-  ]
-    .filter(Boolean)
-    .join(" ");
+  const confidence = data?.confidence ? String(data.confidence).toLowerCase() : null;
 
   return [
     `Best match found: ${project.project_name || "Unknown project"}.`,
-    plainMeaning ? `${plainMeaning}.` : null,
-    inferred.sectorRoot
-      ? `This project sits in the ${inferred.sectorRoot} sector.`
+    confidence ? `Match confidence is ${confidence}.` : null,
+    inferred?.summary || null,
+    project.project_stage
+      ? `Current stage: ${String(project.project_stage).toLowerCase()}.`
       : null,
-    whySignals,
-    `These are decision-support signals based on project context, not proof of a safety problem.`,
+    project.construction_type
+      ? `Construction type: ${String(project.construction_type).toLowerCase()}.`
+      : null,
+    inferred?.sectorRoot ? `Sector: ${inferred.sectorRoot}.` : null,
+    companyCount ? `Linked companies: ${companyCount}.` : null,
+    metricCount ? `Top project metrics found: ${metricCount}.` : null,
     alternates.length
       ? `Other possible matches: ${alternates.join(" | ")}.`
       : null,
+    `These are decision-support signals based on structured project data, not proof of a safety problem.`,
   ]
     .filter(Boolean)
     .join(" ");
@@ -709,22 +694,43 @@ ${firstField || "(none) - ask what kind of safety review the user wants"}
     }
 
     // NEW: project / context lookup shortcut
-    if (looksLikeProjectQuery(text)) {
-      try {
-        const data = await fetchProjectContext(text);
-        applyProjectContextToState(data);
+if (looksLikeProjectQuery(text)) {
+  try {
+    const result = await fetchProjectContext(text);
+    const data = result?.data || {};
 
-        const reply = buildProjectAssistantReply(data);
-        setMsgs((p) => [...p, { id: uid(), role: "ai", text: reply }]);
-        await playTTS(reply, pickTTSMode(reply));
-      } catch (e: any) {
-        const errText = `⚠️ Project context error: ${e?.message || "Lookup failed."}`;
-        setMsgs((p) => [...p, { id: uid(), role: "ai", text: errText }]);
-      } finally {
-        setBusy(false);
-      }
+    if (data?.found && data?.projectContext) {
+      applyProjectContextToState(data);
+
+      const reply = buildProjectAssistantReply(data);
+      setMsgs((p) => [...p, { id: uid(), role: "ai", text: reply }]);
+      await playTTS(reply, pickTTSMode(reply));
+      setBusy(false);
       return;
     }
+
+    if (data?.message) {
+      clearProjectContext();
+      setMsgs((p) => [...p, { id: uid(), role: "ai", text: data.message }]);
+      await playTTS(data.message, "assistant");
+      setBusy(false);
+      return;
+    }
+
+    clearProjectContext();
+    const fallbackText =
+      "I could not retrieve structured project context for that query yet. Try a city, sector, or stage phrase such as Toronto, hospital, infrastructure, planning, or execution.";
+    setMsgs((p) => [...p, { id: uid(), role: "ai", text: fallbackText }]);
+    await playTTS(fallbackText, "assistant");
+  } catch (e: any) {
+    clearProjectContext();
+    const errText = `⚠️ Project context error: ${e?.message || "Lookup failed."}`;
+    setMsgs((p) => [...p, { id: uid(), role: "ai", text: errText }]);
+  } finally {
+    setBusy(false);
+  }
+  return;
+}
 
     const maybeForm = detectSelectedForm(text);
     if (maybeForm) {
