@@ -1,6 +1,4 @@
 import { NextRequest, NextResponse } from "next/server";
-import { db } from "@/lib/db";
-import { inferProjectSignals } from "@/lib/projectInference";
 
 function tokenizeQuery(q: string) {
   return q
@@ -33,6 +31,9 @@ export async function GET(req: NextRequest) {
   }
 
   try {
+    const { db } = await import("@/lib/db");
+    const { inferProjectSignals } = await import("@/lib/projectInference");
+
     const tokens = tokenizeQuery(q);
 
     let searchRes = await db.query(
@@ -182,17 +183,21 @@ export async function GET(req: NextRequest) {
         inferred,
       },
     });
-  } catch (error) {
+  } catch (error: any) {
     console.error("chat-context error:", error);
 
-    return NextResponse.json({
-      found: false,
-      fallback: true,
-      query: q,
-      message:
-        "Project-specific context is temporarily unavailable. Using general construction safety context instead.",
-      matches: [],
-      projectContext: null,
-    });
+    return NextResponse.json(
+      {
+        found: false,
+        fallback: true,
+        query: q,
+        message:
+          "Project-specific context is temporarily unavailable. Using general construction safety context instead.",
+        error: String(error?.message || error),
+        matches: [],
+        projectContext: null,
+      },
+      { status: 500 }
+    );
   }
 }
