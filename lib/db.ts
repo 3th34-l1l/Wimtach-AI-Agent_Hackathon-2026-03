@@ -5,20 +5,20 @@ declare global {
   var __glipPool: Pool | undefined;
 }
 
-const user = "glip";
-const password = "glippass";
-const host = "localhost";
-const port = 5432;
-const database = "glip";
+const connectionString = process.env.DATABASE_URL;
+
+if (!connectionString) {
+  throw new Error("Missing DATABASE_URL");
+}
 
 export const db =
   global.__glipPool ??
   new Pool({
-    user,
-    password,
-    host,
-    port,
-    database,
+    connectionString,
+    ssl:
+      process.env.NODE_ENV === "production"
+        ? { rejectUnauthorized: false }
+        : false,
   });
 
 if (process.env.NODE_ENV !== "production") {
