@@ -1,19 +1,3 @@
-/* ===========================
-FILE: /components/voice/VoiceFloatingAssistant.tsx
-(or /src/app/components/voice/VoiceFloatingAssistant.tsx)
-FULL DROP-IN (presentation-ready demo build)
-✅ Read this page aloud (reliable)
-✅ Push-to-talk recording (tap to start/stop)
-✅ Auto-stop after ~7s of silence / inactivity
-✅ STT via /api/stt
-✅ TTS via /api/tts
-✅ JSON actions apply to AppState + Undo + Review
-✅ Supports SET_FOCUS_FIELD + SET_FIELD_VALUE (form workflow + highlight)
-✅ Workflow rule: if user says “finish/complete this form” -> start immediately (focus first field + ask Q)
-✅ Prevents mic recording its own TTS (stops mic before speaking)
-✅ Optional hands-free loop: after assistant speaks in Talk mode, auto-relisten
-✅ Stops mic tracks (no “stuck mic”)
-=========================== */
 "use client";
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
@@ -67,17 +51,15 @@ type JsonAction =
       spoken?: string;
       question?: string;
     }
-  // ✅ NEW: focus highlight support
   | {
       type: "SET_FOCUS_FIELD";
       id: string;
       spoken?: string;
       question?: string;
     }
-  // ✅ NEW: generic form field fill support
   | {
       type: "SET_FIELD_VALUE";
-      id: string; // e.g., "occurrence.callNumber"
+      id: string;
       value: string;
       spoken?: string;
       question?: string;
@@ -88,58 +70,78 @@ type JsonAction =
       question?: string;
     };
 
+function getTeddyModeFromPath(pathname: string) {
+  const p = pathname.toLowerCase();
+
+  if (p.includes("hazard")) return "hazard";
+  if (p.includes("pretask")) return "pretask";
+  if (p.includes("ppe")) return "ppe";
+  if (p.includes("incident")) return "incident";
+  return "tools";
+}
+
 function pageContext(pathname: string) {
   const p = pathname.toLowerCase();
 
-  if (p.includes("/forms/status")) {
+  if (p === "/" || p.includes("/login")) {
     return {
-      title: "Form 4 — Paramedic Status",
-      goal: "Help the medic complete morning checklist items and clarify any BAD cards.",
+      title: "GLIP Landing",
+      goal: "Explain the construction safety platform clearly and guide the user to dashboard, analysis, or intake.",
       prompt:
-        "You are a voice-first EMS assistant. Explain BAD items plainly and ask the minimum follow-ups to fix them. Keep it short.",
-    };
-  }
-
-  if (p.includes("/forms/shift")) {
-    return {
-      title: "Form 3 — Shift Report",
-      goal: "Answer shift questions and confirm schedule details.",
-      prompt:
-        "You are a scheduling assistant. Ask short follow-ups, confirm date/start/end/unit, then summarize.",
-    };
-  }
-
-  if (p.includes("/forms/occurrence")) {
-    return {
-      title: "Form 1 — Occurrence Report",
-      goal: "Collect structured incident details quickly.",
-      prompt:
-        "You are an EMS documentation assistant. Ask structured questions for an occurrence report and summarize clearly.",
-    };
-  }
-
-  if (p.includes("/forms/teddy")) {
-    return {
-      title: "Form 2 — Teddy Bear Tracking",
-      goal: "Log distribution details clearly and quickly.",
-      prompt:
-        "You are a paramedic assistant helping log teddy bear distribution. Ask who/when/where/how many and confirm.",
+        "You are a construction safety voice assistant for GLIP. Speak clearly, professionally, and briefly. Help users understand the platform and direct them to the right workflow.",
     };
   }
 
   if (p.includes("/dashboard")) {
     return {
-      title: "Dashboard",
-      goal: "Guide the user to the right workflow and offer a quick readout.",
+      title: "Safety Dashboard",
+      goal: "Summarize current safety activity, risk signals, and next actions for construction teams.",
       prompt:
-        "You are a helpful EMS assistant. Give a quick spoken summary of what the user can do next, and ask what they want to do.",
+        "You are a construction safety operations assistant. Summarize dashboard risk indicators, recurring hazards, pending reviews, and the next recommended action in concise, professional language.",
+    };
+  }
+
+  if (p.includes("/chat")) {
+    return {
+      title: "Analysis Workspace",
+      goal: "Help review reports, identify patterns, and produce clear construction-safety summaries.",
+      prompt:
+        "You are a construction safety analysis assistant. Help review reports, detect recurring hazards, and produce concise operational summaries and next steps.",
+    };
+  }
+
+  if (p.includes("/forms/occurrence")) {
+    return {
+      title: "Form 1 — Construction Occurrence Report",
+      goal: "Collect structured construction incident, hazard, and corrective action details quickly and accurately.",
+      prompt:
+        "You are a construction safety reporting assistant. Help complete the occurrence report one field at a time, using practical site language. Ask short follow-up questions and keep responses concise.",
+    };
+  }
+
+  if (p.includes("/forms/teddy")) {
+    return {
+      title: "Form 2 — Safety Intake Workspace",
+      goal: "Help complete the active construction intake mode and capture accurate field information one step at a time.",
+      prompt:
+        "You are a construction safety intake assistant. Help complete the current intake workflow one field at a time. Use construction terminology, ask short focused questions, and confirm the most important operational details only.",
+    };
+  }
+
+  if (p.includes("/settings")) {
+    return {
+      title: "Settings",
+      goal: "Help the user understand profile, voice, and workspace preferences.",
+      prompt:
+        "You are a product assistant for a construction safety application. Explain settings simply and help the user manage profile, company, role, and voice preferences.",
     };
   }
 
   return {
-    title: "Page",
-    goal: "Help the user complete the current workflow.",
-    prompt: "You are a voice-first EMS assistant. Ask short questions and help fill the current page’s form.",
+    title: "GLIP Workspace",
+    goal: "Help the user complete the current construction safety workflow.",
+    prompt:
+      "You are a voice-first construction safety assistant. Use brief, professional language and help the user complete the current workflow accurately.",
   };
 }
 
@@ -186,11 +188,19 @@ function userWantsUpdates(userText: string) {
 
 function firstFieldForPath(pathname: string) {
   const p = pathname.toLowerCase();
+
   if (p.includes("/forms/occurrence")) return "occurrence.date";
-  if (p.includes("/forms/teddy")) return "teddy.datetime";
-  // Status/Shift have their own UX; keep placeholders if you want
-  if (p.includes("/forms/status")) return "status.ACRc";
-  if (p.includes("/forms/shift")) return "shift.upload";
+
+  if (p.includes("/forms/teddy")) {
+    const mode = getTeddyModeFromPath(p);
+
+    if (mode === "hazard") return "teddy.hazard.datetime";
+    if (mode === "pretask") return "teddy.pretask.taskName";
+    if (mode === "ppe") return "teddy.ppe.workType";
+    if (mode === "incident") return "teddy.incident.eventType";
+    return "teddy.tools.datetime";
+  }
+
   return "";
 }
 
@@ -208,18 +218,13 @@ export function VoiceFloatingAssistant() {
   const [open, setOpen] = useState(false);
   const [voiceOn, setVoiceOn] = useState(true);
   const [busy, setBusy] = useState(false);
-
   const [recording, setRecording] = useState(false);
   const [mode, setMode] = useState<VoiceMode>("listen");
-
   const [lastAction, setLastAction] = useState<JsonAction | null>(null);
   const [reviewOpen, setReviewOpen] = useState(false);
-
   const [lastTranscript, setLastTranscript] = useState<string>("");
   const [sttError, setSttError] = useState<string>("");
 
-  // If true, after assistant responds in Talk mode, we auto re-listen.
-  // Presentation-friendly hands-free loop.
   const AUTO_RELISTEN_AFTER_REPLY = true;
 
   const undoSnapshotRef = useRef<{
@@ -231,19 +236,14 @@ export function VoiceFloatingAssistant() {
 
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const mediaRef = useRef<MediaRecorder | null>(null);
-
-  // ✅ silence auto-stop
   const silenceTimerRef = useRef<number | null>(null);
   const lastVoiceAtRef = useRef<number>(0);
-
-  // helps iOS “first audio tap” unlock
   const audioUnlockedRef = useRef(false);
-
-  // remembers if we should start recording after TTS completes (hands-free)
   const pendingRelistenRef = useRef(false);
 
   const pathname = typeof window !== "undefined" ? window.location.pathname : "/";
-  const ctx = useMemo(() => pageContext(pathname), [pathname]);
+  const currentPath = activePage || pathname;
+  const ctx = useMemo(() => pageContext(currentPath), [currentPath]);
 
   useEffect(() => {
     const unlock = async () => {
@@ -254,8 +254,10 @@ export function VoiceFloatingAssistant() {
         await a.play().catch(() => {});
       } catch {}
     };
+
     window.addEventListener("click", unlock, { once: true });
     window.addEventListener("touchstart", unlock, { once: true });
+
     return () => {
       window.removeEventListener("click", unlock);
       window.removeEventListener("touchstart", unlock);
@@ -269,7 +271,6 @@ export function VoiceFloatingAssistant() {
     }
   }
 
-  // ✅ stop timers + recorder + tracks
   function stopRecording() {
     clearSilenceTimer();
 
@@ -291,10 +292,8 @@ export function VoiceFloatingAssistant() {
     if (!clean) return;
 
     try {
-      // ✅ prevent mic capturing assistant voice
       if (recording) stopRecording();
 
-      // stop any in-progress audio first
       if (audioRef.current) {
         audioRef.current.pause();
         audioRef.current.src = "";
@@ -306,7 +305,6 @@ export function VoiceFloatingAssistant() {
         body: JSON.stringify({ text: clean, mode: ttsMode }),
       });
 
-      // demo-safe: allow “no audio” responses
       if (r.status === 204) return;
       if (!r.ok) return;
 
@@ -317,12 +315,10 @@ export function VoiceFloatingAssistant() {
       const a = new Audio(url);
       audioRef.current = a;
 
-      // ✅ after TTS ends, optionally re-listen (Talk mode hands-free)
       a.onended = () => {
         URL.revokeObjectURL(url);
         if (pendingRelistenRef.current) {
           pendingRelistenRef.current = false;
-          // small delay to avoid immediate tail-capture
           setTimeout(() => {
             if (!busy && mode === "talk" && open) startRecording();
           }, 350);
@@ -330,9 +326,7 @@ export function VoiceFloatingAssistant() {
       };
 
       await a.play();
-    } catch {
-      // ignore autoplay errors
-    }
+    } catch {}
   }
 
   function saveUndoSnapshot() {
@@ -384,12 +378,10 @@ export function VoiceFloatingAssistant() {
       dispatchAction({ type: "APPEND_CHAT_NOTE", text: line });
     }
 
-    // ✅ NEW: focus highlight
     if (a.type === "SET_FOCUS_FIELD" && typeof (a as any).id === "string") {
       dispatchAction({ type: "SET_FOCUS_FIELD", id: (a as any).id });
     }
 
-    // ✅ NEW: generic form fill
     if (a.type === "SET_FIELD_VALUE" && typeof (a as any).id === "string") {
       dispatchAction({
         type: "SET_FIELD_VALUE",
@@ -404,12 +396,12 @@ export function VoiceFloatingAssistant() {
     const wantsJson = userWantsUpdates(userText);
 
     try {
-      const firstField = firstFieldForPath(activePage ?? pathname);
+      const firstField = firstFieldForPath(currentPath);
 
       const system = `${ctx.prompt}
 
 CURRENT PAGE: ${ctx.title}
-PATH: ${activePage ?? pathname}
+PATH: ${currentPath}
 GOAL: ${ctx.goal}
 
 LIVE STATE:
@@ -417,34 +409,34 @@ LIVE STATE:
 - weatherSummary: ${weatherSummary ?? "—"}
 - narrative: ${narrative ?? "—"}
 
-STATUS MAP (Form 4):
+STATUS MAP:
 ${JSON.stringify(statusMap ?? {}, null, 2)}
 
-SHIFT SCHEDULE (Form 3):
+SHIFT SCHEDULE:
 ${JSON.stringify(shiftSchedule ?? [], null, 2)}
 
-WORKFLOW RULES (VERY IMPORTANT):
-- If the user asks to complete/fill/finish the CURRENT open form, you MUST start immediately.
-- First action must be SET_FOCUS_FIELD for the first field on this page.
-- Then ask ONE short question for the value needed for that field.
-- After user answers, set the field value (SET_FIELD_VALUE), then move focus to the next field, repeating until complete.
-- Only one field at a time.
-- Keep each spoken segment under ~10–15 seconds.
+WORKFLOW RULES:
+- You are helping with a construction safety product, not healthcare or EMS.
+- Use construction, site, crew, hazard, permit, PPE, equipment, and supervisor language.
+- If the user asks to complete, fill, or finish the current form, begin immediately.
+- First action should be SET_FOCUS_FIELD for the next field on the current page.
+- Ask one short question at a time.
+- After the user answers, set the field value using SET_FIELD_VALUE.
+- Keep spoken replies brief and practical.
 
 FIRST FIELD FOR THIS PAGE:
 ${firstField ? `- ${firstField}` : "- (unknown)"}
 
-JSON ACTION FORMAT (Return JSON ONLY when updating):
+JSON ACTION FORMAT:
 { "type":"SET_FOCUS_FIELD", "id":"occurrence.date", "spoken":"...", "question":"..." }
 { "type":"SET_FIELD_VALUE", "id":"occurrence.date", "value":"2026-03-04", "spoken":"...", "question":"..." }
-{ "type":"PATCH_STATUS", "patch": { "ACRc":"GOOD" }, "spoken":"...", "question":"..." }
 { "type":"SET_NARRATIVE", "text":"...", "spoken":"...", "question":"..." }
-{ "type":"SET_SELECTED_FORM", "form":"Occurrence Report", "spoken":"..." }
+{ "type":"SET_SELECTED_FORM", "form":"...", "spoken":"..." }
 { "type":"CONFIRM_EMAIL_SENT", "to":"...", "subject":"...", "spoken":"..." }
 { "type":"NO_ACTION", "spoken":"...", "question":"..." }
 
 RULES:
-- If the user is asking to UPDATE/FILL/FINISH/COMPLETE something on this page, respond ONLY with valid JSON (no extra text).
+- If the user wants page updates, return valid JSON only.
 - Otherwise respond normally.
 `.trim();
 
@@ -482,10 +474,8 @@ RULES:
         const spoken = (maybe as any).spoken ? String((maybe as any).spoken) : "";
         const question = (maybe as any).question ? String((maybe as any).question) : "";
 
-        // If we are in Talk mode, after assistant finishes speaking we can auto-relisten
         pendingRelistenRef.current = AUTO_RELISTEN_AFTER_REPLY && mode === "talk";
 
-        // ✅ prevent overlap
         if (spoken) {
           await playTTS(spoken, maybe.type === "NO_ACTION" ? "assistant" : "scribe");
         }
@@ -497,7 +487,6 @@ RULES:
         return;
       }
 
-      // non-JSON normal response
       pendingRelistenRef.current = AUTO_RELISTEN_AFTER_REPLY && mode === "talk";
 
       const lower = text.toLowerCase();
@@ -512,21 +501,21 @@ RULES:
     }
   }
 
-  // ✅ Reliable “read aloud” path (always speaks)
   async function handleListenNow() {
     if (busy) return;
     setBusy(true);
+
     try {
       const prompt = `
-Summarize the CURRENT page for the medic in under 10 seconds.
+Summarize the current construction safety page in under 10 seconds.
 
 PAGE: ${ctx.title}
 GOAL: ${ctx.goal}
 
 Say:
-- What this page is for
-- The next 1–2 actions the medic should do
-- End with one short question (e.g., "What do you want to do next?")
+- what this page is for
+- the next one or two actions the user should take
+- end with one short helpful question
 `.trim();
 
       const r = await fetch("/api/llm", {
@@ -549,7 +538,7 @@ Say:
       if (text) {
         await playTTS(text, "assistant");
       } else {
-        await playTTS("I’m ready. What would you like to do next?", "assistant");
+        await playTTS("I’m ready. What would you like to review next?", "assistant");
       }
     } finally {
       setBusy(false);
@@ -581,7 +570,6 @@ Say:
       };
 
       mr.onstop = async () => {
-        // stop tracks to avoid “stuck mic”
         try {
           stream.getTracks().forEach((t) => t.stop());
         } catch {}
@@ -625,12 +613,10 @@ Say:
         }
       };
 
-      // start recording with chunking (mobile reliability)
       lastVoiceAtRef.current = Date.now();
       mr.start(250);
       setRecording(true);
 
-      // ✅ auto-stop after ~7s with no audio chunks
       silenceTimerRef.current = window.setInterval(() => {
         const silentFor = Date.now() - lastVoiceAtRef.current;
         if (silentFor > 7000) {
@@ -641,7 +627,7 @@ Say:
       setRecording(false);
       clearSilenceTimer();
       setSttError(e?.message || "Mic permission denied.");
-      await playTTS("Mic permission denied. You can type instead.", "assistant");
+      await playTTS("Mic permission denied. You can continue using the page normally.", "assistant");
     }
   }
 
@@ -656,24 +642,22 @@ Say:
 
   return (
     <>
-      {/* Floating FAB */}
       <button
         onClick={() => setOpen(true)}
-        className="fixed bottom-5 right-5 z-[60] flex h-14 w-14 items-center justify-center rounded-full bg-gradient-to-br from-sky-500/80 to-indigo-500/70 shadow-lg shadow-black/30 ring-1 ring-white/10 active:scale-95"
+        className="fixed bottom-5 right-5 z-[60] flex h-14 w-14 items-center justify-center rounded-full bg-gradient-to-br from-[#c7953d] via-[#d6a84f] to-[#b98433] shadow-lg shadow-black/30 ring-1 ring-white/10 active:scale-95"
         aria-label="Open Voice Assistant"
       >
         <Mic className="h-6 w-6 text-white" />
       </button>
 
-      {/* Panel */}
       {open && (
-        <div className="fixed bottom-5 right-5 left-5 sm:left-auto sm:w-[420px] z-[70] pointer-events-none">
-          <Card className="pointer-events-auto rounded-3xl bg-zinc-950/60 backdrop-blur-xl p-4 shadow-2xl shadow-black/40 ring-1 ring-white/10">
+        <div className="fixed bottom-5 left-5 right-5 z-[70] pointer-events-none sm:left-auto sm:w-[420px]">
+          <Card className="pointer-events-auto rounded-3xl bg-[#121922]/80 p-4 shadow-2xl shadow-black/40 ring-1 ring-white/[0.08] backdrop-blur-xl">
             <div className="flex items-start justify-between gap-3">
               <div>
                 <div className="flex items-center gap-2">
-                  <div className="text-sm font-semibold text-white">Voice Assistant</div>
-                  <div className="inline-flex items-center gap-1 rounded-full bg-black/30 px-2 py-0.5 text-[11px] text-zinc-200 ring-1 ring-white/10">
+                  <div className="text-sm font-semibold text-[#eef2f4]">Voice Assistant</div>
+                  <div className="inline-flex items-center gap-1 rounded-full bg-black/20 px-2 py-0.5 text-[11px] text-[#d7dee3] ring-1 ring-white/[0.08]">
                     <span
                       className={`h-1.5 w-1.5 rounded-full ${
                         recording ? "bg-red-500" : busy ? "bg-amber-400" : "bg-emerald-400"
@@ -682,7 +666,7 @@ Say:
                     {recording ? "Listening" : busy ? "Working" : "Ready"}
                   </div>
                 </div>
-                <div className="text-xs text-zinc-300/80">{ctx.title}</div>
+                <div className="text-xs text-[#a9b4bc]">{ctx.title}</div>
               </div>
 
               <div className="flex items-center gap-2">
@@ -701,38 +685,40 @@ Say:
               </div>
             </div>
 
-            {/* Mode */}
             <div className="mt-4 grid grid-cols-2 gap-2">
-              <Button variant={mode === "listen" ? "primary" : "ghost"} onClick={() => setMode("listen")}>
+              <Button
+                variant={mode === "listen" ? "primary" : "ghost"}
+                onClick={() => setMode("listen")}
+              >
                 <MessageSquareText className="mr-2 h-4 w-4" />
                 Listen
               </Button>
-              <Button variant={mode === "talk" ? "primary" : "ghost"} onClick={() => setMode("talk")}>
+              <Button
+                variant={mode === "talk" ? "primary" : "ghost"}
+                onClick={() => setMode("talk")}
+              >
                 <Mic className="mr-2 h-4 w-4" />
                 Talk
               </Button>
             </div>
 
-            {/* Goal */}
-            <div className="mt-3 rounded-2xl bg-black/25 p-3 text-xs text-zinc-200 ring-1 ring-white/5">
-              <div className="text-zinc-300/70">Goal</div>
+            <div className="mt-3 rounded-2xl bg-black/20 p-3 text-xs text-[#d7dee3] ring-1 ring-white/[0.05]">
+              <div className="text-[#7f8b94]">Goal</div>
               <div className="mt-1">{ctx.goal}</div>
             </div>
 
-            {/* Transcript + STT status */}
-            <div className="mt-3 rounded-2xl bg-black/25 p-3 text-xs text-zinc-200 ring-1 ring-white/5">
-              <div className="text-zinc-300/70">Heard</div>
+            <div className="mt-3 rounded-2xl bg-black/20 p-3 text-xs text-[#d7dee3] ring-1 ring-white/[0.05]">
+              <div className="text-[#7f8b94]">Heard</div>
               <div className="mt-1 min-h-[18px]">
                 {lastTranscript ? (
-                  <span className="text-zinc-100">{lastTranscript}</span>
+                  <span className="text-[#eef2f4]">{lastTranscript}</span>
                 ) : (
-                  <span className="text-zinc-400">—</span>
+                  <span className="text-[#7f8b94]">—</span>
                 )}
               </div>
               {sttError ? <div className="mt-2 text-[11px] text-amber-300/80">{sttError}</div> : null}
             </div>
 
-            {/* Primary action */}
             <div className="mt-3 flex items-center gap-2">
               {mode === "listen" ? (
                 <Button variant="primary" className="w-full" onClick={handleListenNow} disabled={busy}>
@@ -754,7 +740,7 @@ Say:
 
                   <Button
                     variant="primary"
-                    className={`w-full relative ${recording ? "bg-red-600 hover:bg-red-600/90" : ""}`}
+                    className={`relative w-full ${recording ? "bg-red-600 hover:bg-red-600/90" : ""}`}
                     onClick={() => (recording ? stopRecording() : startRecording())}
                     disabled={busy}
                   >
@@ -783,7 +769,6 @@ Say:
               )}
             </div>
 
-            {/* Review + Undo row */}
             <div className="mt-3 grid grid-cols-2 gap-2">
               <Button
                 variant="ghost"
@@ -806,18 +791,17 @@ Say:
               </Button>
             </div>
 
-            {/* Review panel */}
             {reviewOpen && (
-              <div className="mt-3 rounded-2xl bg-black/30 p-3 text-[11px] text-zinc-100 shadow-inner ring-1 ring-white/5">
-                <div className="mb-2 text-xs font-semibold text-zinc-200">Last Action JSON</div>
-                <pre className="max-h-[180px] overflow-auto whitespace-pre-wrap break-words text-zinc-100">
+              <div className="mt-3 rounded-2xl bg-black/25 p-3 text-[11px] text-[#eef2f4] shadow-inner ring-1 ring-white/[0.05]">
+                <div className="mb-2 text-xs font-semibold text-[#d7dee3]">Last Action JSON</div>
+                <pre className="max-h-[180px] overflow-auto whitespace-pre-wrap break-words text-[#eef2f4]">
                   {lastActionPretty || "—"}
                 </pre>
               </div>
             )}
 
-            <div className="mt-3 text-[11px] text-zinc-300/60">
-              Tip: On iPhone/Chrome, audio only plays after a tap—use “Read this page aloud” once to unlock audio.
+            <div className="mt-3 text-[11px] text-[#7f8b94]">
+              Tip: Use Listen for a quick page summary, or Talk to fill forms one field at a time.
             </div>
           </Card>
         </div>

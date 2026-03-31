@@ -10,6 +10,7 @@ import Link from "next/link";
 import { ArrowRight, Shield, Mic, FileText } from "lucide-react";
 import { motion } from "framer-motion";
 import { Button } from "@/src/app/components/ui/Button";
+import { AuthButton } from "@/src/app/components/auth/AuthButton";
 
 export default function HomePage() {
   return (
@@ -31,18 +32,28 @@ export default function HomePage() {
         </div>
 
         <nav className="flex items-center gap-3">
-          <Link href="/dashboard" className="text-sm text-[#d7dee3] transition hover:text-white">
-            Dashboard
-          </Link>
-          <Link href="/chat" className="text-sm text-[#d7dee3] transition hover:text-white">
-            Analysis
-          </Link>
-          <Link href="/dashboard" aria-label="Get started">
-            <Button size="sm" variant="primary">
-              Start Review <ArrowRight className="ml-2 h-4 w-4" />
-            </Button>
-          </Link>
-        </nav>
+        <Link
+          href="/dashboard"
+          className="text-sm text-[#d7dee3] transition hover:text-white"
+        >
+          Dashboard
+        </Link>
+
+        <Link
+          href="/chat"
+          className="text-sm text-[#d7dee3] transition hover:text-white"
+        >
+          Analysis
+        </Link>
+
+        <Link href="/dashboard" aria-label="Get started">
+          <Button size="sm" variant="primary">
+            Start Review <ArrowRight className="ml-2 h-4 w-4" />
+          </Button>
+        </Link>
+
+        <AuthButton />
+      </nav>
       </header>
 
       <section className="relative mx-auto grid max-w-6xl grid-cols-1 gap-10 px-5 pb-16 pt-10 md:grid-cols-2 md:px-8 md:pb-24 md:pt-16">
