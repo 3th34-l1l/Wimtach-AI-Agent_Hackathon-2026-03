@@ -8,7 +8,7 @@ FILE: /components/shell/TopNav.tsx
 
 import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ChevronDown, Globe, LogOut, Mic, Settings, UserCircle2 } from "lucide-react";
+import { ChevronDown, Globe, LogOut, Mic, Settings } from "lucide-react";
 import { Button } from "@/src/app/components/ui/Button";
 
 type DemoUser = {
@@ -69,6 +69,7 @@ export function TopNav() {
   function toggleVoice() {
     const next = !voiceEnabled;
     setVoiceEnabled(next);
+
     try {
       localStorage.setItem("glip_voice_enabled", String(next));
       window.dispatchEvent(new Event("glip-voice-change"));
@@ -79,6 +80,7 @@ export function TopNav() {
     try {
       localStorage.removeItem("glip_demo_user");
     } catch {}
+
     window.location.href = "/";
   }
 
@@ -89,7 +91,7 @@ export function TopNav() {
           <Link href="/" className="text-sm font-semibold text-[#eef2f4]">
             GLIP
           </Link>
-          <span className="text-xs text-[#7f8b94]">Safety Tracker</span>
+          <span className="text-xs text-[#7f8b94]">Operations Intelligence</span>
         </div>
 
         <div className="ml-auto flex items-center gap-2">
@@ -101,7 +103,8 @@ export function TopNav() {
           <button
             type="button"
             onClick={toggleVoice}
-            title="Voice"
+            title={voiceEnabled ? "Disable live voice" : "Enable live voice"}
+            aria-pressed={voiceEnabled}
             className={[
               "inline-flex h-11 items-center justify-center rounded-2xl px-4 text-sm font-medium transition-all duration-200",
               "focus-visible:ring-2 focus-visible:ring-amber-400/45 focus-visible:ring-offset-2 focus-visible:ring-offset-[#0f1418]",
@@ -112,7 +115,7 @@ export function TopNav() {
           >
             <Mic className="h-4 w-4" />
             <span className="ml-2 hidden sm:inline">
-              {voiceEnabled ? "Voice" : "Voice Off"}
+              {voiceEnabled ? "Live Voice" : "Voice Off"}
             </span>
           </button>
 
@@ -130,16 +133,18 @@ export function TopNav() {
                 onClick={() => setMenuOpen((v) => !v)}
                 className="inline-flex h-11 items-center gap-3 rounded-2xl border border-white/[0.08] bg-white/[0.04] px-3 text-sm text-[#d7dee3] transition hover:bg-white/[0.07]"
                 title="Profile"
+                aria-expanded={menuOpen}
+                aria-haspopup="menu"
               >
                 <div className="grid h-8 w-8 place-items-center rounded-full bg-gradient-to-br from-[#d6a84f] to-[#4f7d95] text-xs font-semibold text-white">
                   {initials}
                 </div>
 
                 <div className="hidden text-left sm:block">
-                  <div className="text-sm font-medium text-[#eef2f4] leading-none">
+                  <div className="text-sm font-medium leading-none text-[#eef2f4]">
                     {profile?.name || user.username}
                   </div>
-                  <div className="mt-0.5 text-[11px] text-[#a9b4bc] leading-none">
+                  <div className="mt-0.5 text-[11px] leading-none text-[#a9b4bc]">
                     {profile?.company || user.role}
                   </div>
                 </div>
@@ -148,12 +153,16 @@ export function TopNav() {
               </button>
 
               {menuOpen ? (
-                <div className="absolute right-0 z-50 mt-2 w-72 rounded-2xl border border-white/[0.08] bg-[#151b20] p-2 shadow-[0_20px_60px_rgba(0,0,0,.35)]">
+                <div
+                  className="absolute right-0 z-50 mt-2 w-72 rounded-2xl border border-white/[0.08] bg-[#151b20] p-2 shadow-[0_20px_60px_rgba(0,0,0,.35)]"
+                  role="menu"
+                >
                   <div className="rounded-2xl bg-white/[0.04] p-3">
                     <div className="flex items-center gap-3">
                       <div className="grid h-10 w-10 place-items-center rounded-full bg-gradient-to-br from-[#d6a84f] to-[#4f7d95] text-sm font-semibold text-white">
                         {initials}
                       </div>
+
                       <div>
                         <div className="font-medium text-[#eef2f4]">
                           {profile?.name || user.username}
