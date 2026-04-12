@@ -7,7 +7,7 @@ Landing page
 "use client";
 
 import Link from "next/link";
-import { ArrowRight, Shield, Mic, FileText } from "lucide-react";
+import { ArrowRight, Radar, Mic, MapPinned } from "lucide-react";
 import { motion } from "framer-motion";
 import { Button } from "@/src/app/components/ui/Button";
 import { AuthButton } from "@/src/app/components/auth/AuthButton";
@@ -26,34 +26,36 @@ export default function HomePage() {
         <div className="flex items-center gap-3">
           <div className="h-9 w-9 rounded-2xl bg-gradient-to-br from-[#d6a84f] to-[#4f7d95] shadow-[0_0_0_1px_rgba(255,255,255,.12)]" />
           <div className="leading-tight">
-            <div className="text-sm font-semibold tracking-wide text-[#eef2f4]">GLIP</div>
-            <div className="text-xs text-[#a9b4bc]">Safety Tracker</div>
+            <div className="text-sm font-semibold tracking-wide text-[#eef2f4]">
+              Aether Intelligence
+            </div>
+            <div className="text-xs text-[#a9b4bc]">Aviation Operations Intelligence</div>
           </div>
         </div>
 
         <nav className="flex items-center gap-3">
-        <Link
-          href="/dashboard"
-          className="text-sm text-[#d7dee3] transition hover:text-white"
-        >
-          Dashboard
-        </Link>
+          <Link
+            href="/dashboard"
+            className="text-sm text-[#d7dee3] transition hover:text-white"
+          >
+            Command Center
+          </Link>
 
-        <Link
-          href="/chat"
-          className="text-sm text-[#d7dee3] transition hover:text-white"
-        >
-          Analysis
-        </Link>
+          <Link
+            href="/chat"
+            className="text-sm text-[#d7dee3] transition hover:text-white"
+          >
+            Intelligence
+          </Link>
 
-        <Link href="/dashboard" aria-label="Get started">
-          <Button size="sm" variant="primary">
-            Start Review <ArrowRight className="ml-2 h-4 w-4" />
-          </Button>
-        </Link>
+          <Link href="/dashboard" aria-label="Open command center">
+            <Button size="sm" variant="primary">
+              Launch Platform <ArrowRight className="ml-2 h-4 w-4" />
+            </Button>
+          </Link>
 
-        <AuthButton />
-      </nav>
+          <AuthButton />
+        </nav>
       </header>
 
       <section className="relative mx-auto grid max-w-6xl grid-cols-1 gap-10 px-5 pb-16 pt-10 md:grid-cols-2 md:px-8 md:pb-24 md:pt-16">
@@ -64,34 +66,33 @@ export default function HomePage() {
             transition={{ duration: 0.45 }}
             className="mb-4 inline-flex w-fit items-center rounded-full border border-white/[0.08] bg-white/[0.04] px-3 py-1 text-xs font-medium tracking-[0.08em] text-[#a9b4bc]"
           >
-            Construction safety intelligence
+            Aviation intelligence platform
           </motion.div>
 
           <motion.h1
             initial={{ opacity: 0, y: 10 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: 0.5 }}
-            className="max-w-[11ch] text-balance text-4xl font-semibold tracking-tight text-[#eef2f4] md:text-6xl md:leading-[1.02]"
+            className="max-w-[12ch] text-balance text-4xl font-semibold tracking-tight text-[#eef2f4] md:text-6xl md:leading-[1.02]"
           >
-            Turn safety reports into patterns, accountability, and action.
+            Turn aircraft movement into insight, context, and opportunity.
           </motion.h1>
 
           <p className="mt-5 max-w-prose text-pretty text-[17px] leading-8 text-[#c9d1d6]">
-            GLIP Safety Tracker helps construction safety teams review reports,
-            extract key incident details, detect recurring hazards, and generate
-            clear, source-backed summaries for faster follow-up and better
-            decision-making.
+            Aether Intelligence helps aviation teams track aircraft, analyze airport and
+            operator activity, review source-backed context, and surface commercial
+            opportunities from real-world data.
           </p>
 
           <div className="mt-7 flex flex-col gap-3 sm:flex-row">
             <Link href="/dashboard">
               <Button variant="primary" className="w-full sm:w-auto">
-                Open Dashboard <ArrowRight className="ml-2 h-4 w-4" />
+                Open Command Center <ArrowRight className="ml-2 h-4 w-4" />
               </Button>
             </Link>
             <Link href="/chat">
               <Button variant="ghost" className="w-full sm:w-auto">
-                Review Reports
+                Open Intelligence
               </Button>
             </Link>
           </div>
@@ -99,23 +100,23 @@ export default function HomePage() {
           <div className="mt-8 grid grid-cols-1 gap-3 sm:grid-cols-2">
             <FeatureChip
               icon={<Mic className="h-4 w-4" />}
-              title="AI Intake"
-              desc="Parse reports from chat, email, or manual entry"
+              title="AI Analyst"
+              desc="Ask about aircraft, operators, airports, and live context"
             />
             <FeatureChip
-              icon={<FileText className="h-4 w-4" />}
-              title="Trend Analysis"
-              desc="Detect recurring hazards and emerging patterns"
+              icon={<Radar className="h-4 w-4" />}
+              title="Movement Signals"
+              desc="Review recurring patterns, activity shifts, and operational clues"
             />
             <FeatureChip
-              icon={<Shield className="h-4 w-4" />}
-              title="Source Ladder"
-              desc="Map findings to trusted regulations and standards"
+              icon={<MapPinned className="h-4 w-4" />}
+              title="Source Context"
+              desc="Trace findings to stronger supporting signals and trusted references"
             />
             <FeatureChip
               icon={<ArrowRight className="h-4 w-4" />}
-              title="Review Workflow"
-              desc="Approve, correct, and store structured safety data"
+              title="Opportunity Workflow"
+              desc="Move from raw signals to structured commercial follow-up"
             />
           </div>
         </div>
@@ -129,32 +130,32 @@ export default function HomePage() {
           <div className="rounded-[28px] border border-white/[0.08] bg-white/[0.04] p-3 shadow-[0_20px_60px_rgba(0,0,0,.26)] backdrop-blur">
             <div className="rounded-[24px] bg-[#121922]/90 p-4 shadow-inner">
               <div className="flex items-center justify-between">
-                <div className="text-sm font-medium text-[#eef2f4]">Safety Review</div>
-                <div className="text-xs text-[#7f8b94]">EN • FR</div>
+                <div className="text-sm font-medium text-[#eef2f4]">Intelligence Review</div>
+                <div className="text-xs text-[#7f8b94]">EN • Live</div>
               </div>
 
               <div className="mt-4 space-y-3">
-                <ChatBubble role="ai" text="Describe the safety report or near-miss." />
+                <ChatBubble role="ai" text="What aircraft, airport, or operator do you want to review?" />
                 <ChatBubble
                   role="user"
-                  text="Worker slipped while exiting equipment. No injury, but poor footing was noted."
+                  text="Show me aircraft activity patterns around Billy Bishop and flag operator opportunities."
                 />
                 <ChatBubble
                   role="ai"
-                  text="Captured. Do you want to tag this as a vehicle or ground-condition incident?"
+                  text="Captured. I can review movement signals, linked operators, likely base patterns, and service opportunity indicators."
                 />
-                <ChatBubble role="user" text="Ground-condition incident." />
+                <ChatBubble role="user" text="Start with the strongest recurring operators." />
               </div>
 
               <div className="mt-4 rounded-2xl border border-white/[0.06] bg-white/[0.04] p-3">
                 <div className="text-xs uppercase tracking-[0.08em] text-[#7f8b94]">
-                  Report Preview
+                  Intelligence Preview
                 </div>
                 <div className="mt-2 grid grid-cols-2 gap-2 text-xs">
-                  <PreviewField k="Date" v="Auto" />
-                  <PreviewField k="Location" v="North Yard" />
-                  <PreviewField k="Incident" v="Slip / ground condition" />
-                  <PreviewField k="Review Status" v="Pending" />
+                  <PreviewField k="Airport" v="Billy Bishop" />
+                  <PreviewField k="Focus" v="Recurring operators" />
+                  <PreviewField k="Signal" v="Movement clustering" />
+                  <PreviewField k="Status" v="Review in progress" />
                 </div>
               </div>
             </div>
@@ -163,7 +164,7 @@ export default function HomePage() {
       </section>
 
       <footer className="relative mx-auto max-w-6xl px-5 pb-10 text-xs text-[#6f7a82] md:px-8">
-        © {new Date().getFullYear()} GLIP • Safety Tracker MVP
+        © {new Date().getFullYear()} Aether Intelligence
       </footer>
     </main>
   );
