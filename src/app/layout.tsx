@@ -4,14 +4,15 @@ FILE: /app/layout.tsx
 ===========================
 */
 
+import type { Metadata } from "next";
 import { AppStateProvider } from "./components/state/AppState";
 import { VoiceMount } from "./components/voice/VoiceMount";
 import "./globals.css";
-import type { Metadata } from "next";
 
 export const metadata: Metadata = {
-  title: "GLIP Safety Intelligence",
-  description: "Track incidents, surface recurring hazards, and generate plain-language safety insights for construction teams.",
+  title: "Aether Intelligence",
+  description:
+    "Aviation operations intelligence for tracking aircraft, analyzing operators, mapping airports, and uncovering service opportunities using real-world data and AI.",
 };
 
 export default function RootLayout({
@@ -22,9 +23,8 @@ export default function RootLayout({
   return (
     <html lang="en">
       <body className="min-h-dvh bg-transparent text-[var(--text)] antialiased">
-         <AppStateProvider>
+        <AppStateProvider>
           {children}
-          {/* ✅ now VoiceFloatingAssistant can use useAppState safely */}
           <VoiceMount />
         </AppStateProvider>
       </body>

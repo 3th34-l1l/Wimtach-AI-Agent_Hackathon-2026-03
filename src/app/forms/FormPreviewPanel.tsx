@@ -3,14 +3,15 @@
 /*
 ===========================
 FILE: /components/forms/FormPreviewPanel.tsx
-GLIP stakeholder-facing analysis panel
+Aether stakeholder-facing intelligence panel
 ===========================
 
 Purpose:
-- Show matched project context in plain language
-- Explain why the system matched that project
-- Surface inferred review signals in a stakeholder-friendly way
+- Show matched aviation context in plain language
+- Explain why the system matched that context
+- Surface inferred intelligence signals in a stakeholder-friendly way
 - Keep source/support framing visible
+- Prepare for future relationship and contact intelligence expansion
 */
 
 import { Card } from "@/src/app/components/ui/Card";
@@ -37,16 +38,16 @@ function getSourceSupportLabel(selectedForm?: string | null) {
   if (f.includes("source")) {
     return {
       level: "Level 1–2",
-      label: "Higher-authority support",
-      note: "This workflow is designed to foreground regulatory and standards-based support.",
+      label: "Higher-confidence support",
+      note: "This workflow is designed to foreground stronger evidence, verified records, and more authoritative supporting context.",
     };
   }
 
   if (f.includes("trend")) {
     return {
       level: "Level 2–3",
-      label: "Pattern / standards context",
-      note: "Trend review combines recurring issue analysis with standards or framework context.",
+      label: "Pattern / signal context",
+      note: "Signal review combines recurring activity analysis with structured supporting context.",
     };
   }
 
@@ -54,22 +55,22 @@ function getSourceSupportLabel(selectedForm?: string | null) {
     return {
       level: "Level 2–4",
       label: "Mixed support view",
-      note: "Summary workflows may combine structured findings, supporting sources, and operational interpretation.",
+      note: "Summary workflows may combine structured findings, supporting signals, and operational interpretation.",
     };
   }
 
   if (f.includes("incident")) {
     return {
       level: "Context pending",
-      label: "Initial incident capture",
-      note: "Source support becomes more specific after the report is captured and interpreted.",
+      label: "Initial asset or signal capture",
+      note: "Source support becomes more specific after the aircraft, airport, operator, or activity is captured and interpreted.",
     };
   }
 
   return {
     level: "Context pending",
-    label: "Awaiting source match",
-    note: "Source support becomes more specific after project context and review details are available.",
+    label: "Awaiting evidence match",
+    note: "Source support becomes more specific after aviation context and review details are available.",
   };
 }
 
@@ -90,18 +91,18 @@ function buildWhyMatched({
     items.push(`location context matched (${projectLocation})`);
   }
   if (projectStage) {
-    items.push(`${projectStage.toLowerCase()}-stage context matched`);
+    items.push(`${projectStage.toLowerCase()} activity stage context matched`);
   }
   if (sectorRoot) {
     items.push(`${sectorRoot.toLowerCase()} sector context matched`);
   }
   if (environment) {
-    items.push(`${environment.toLowerCase()} project environment matched`);
+    items.push(`${environment.toLowerCase()} operating environment matched`);
   }
 
   return items.length
     ? items
-    : ["project metadata and query terms aligned strongly enough to select this result as the best current match"];
+    : ["metadata and query terms aligned strongly enough to select this result as the best current match"];
 }
 
 function buildWhatThisMeans({
@@ -119,7 +120,7 @@ function buildWhatThisMeans({
 
   if (projectStage) {
     parts.push(
-      `The project appears to be in ${projectStage.toLowerCase()} stage, which helps indicate how active or review-sensitive it may be.`
+      `The matched context appears to be in ${projectStage.toLowerCase()} stage, which helps indicate how active, relevant, or commercially sensitive it may be.`
     );
   }
 
@@ -129,19 +130,19 @@ function buildWhatThisMeans({
 
   if (sectorRoot) {
     parts.push(
-      `It sits in the ${sectorRoot} sector, which helps frame the construction and operational context.`
+      `It sits in the ${sectorRoot} sector, which helps frame the operator, airport, or service environment around the match.`
     );
   }
 
   if (environment) {
     parts.push(
-      `The current environment classification is ${environment.toLowerCase()}, which affects how the context is interpreted.`
+      `The current environment classification is ${environment.toLowerCase()}, which affects how this intelligence should be interpreted.`
     );
   }
 
   return parts.length
     ? parts.join(" ")
-    : "Project context is available, but the meaning layer will improve as more matched signals are surfaced.";
+    : "Matched context is available, but the meaning layer will improve as more asset, operator, and relationship signals are surfaced.";
 }
 
 export function FormPreviewPanel() {
@@ -181,9 +182,9 @@ export function FormPreviewPanel() {
   return (
     <Card className="h-[70dvh]">
       <div>
-        <div className="text-sm font-medium">Analysis Preview</div>
+        <div className="text-sm font-medium">Intelligence Preview</div>
         <div className="text-xs text-zinc-400">
-          Shows matched project context, interpreted review signals, and stakeholder-friendly explanation.
+          Shows matched aviation context, interpreted signals, and stakeholder-friendly explanation.
         </div>
       </div>
 
@@ -197,8 +198,8 @@ export function FormPreviewPanel() {
           <InfoBlock
             icon={<FileSearch className="h-4 w-4" />}
             title="Best Match"
-            value={fallback(projectName, "No matched project yet")}
-            description="This is the strongest current project match returned from the database for the latest project-style query."
+            value={fallback(projectName, "No matched aviation context yet")}
+            description="This is the strongest current context match returned for the latest aircraft, airport, operator, or activity-style query."
           />
 
           <InfoBlock
@@ -211,8 +212,8 @@ export function FormPreviewPanel() {
           <InfoBlock
             icon={<AlertTriangle className="h-4 w-4" />}
             title="Important Note"
-            value="Contextual review signals, not confirmed findings"
-            description="The signals shown below are inferred from project metadata and linked records. They help frame review, but do not prove a safety issue by themselves."
+            value="Contextual intelligence signals, not confirmed facts"
+            description="The signals shown below are inferred from matched records and related metadata. They help frame review and outreach potential, but do not prove a commercial or operational conclusion by themselves."
           />
         </div>
 
@@ -221,7 +222,7 @@ export function FormPreviewPanel() {
             k="Context Summary"
             v={
               projectSummary ||
-              "No project context summary yet. Ask about a project, location, sector, or stage to populate this area."
+              "No aviation context summary yet. Ask about an aircraft, airport, operator, city, service niche, or activity pattern to populate this area."
             }
           />
 
@@ -262,15 +263,15 @@ export function FormPreviewPanel() {
 
         <div className="mt-6 grid grid-cols-1 gap-3">
           <Preview
-            k="Site Conditions"
-            v={weatherSummary || "No site conditions captured yet."}
+            k="Flight Conditions"
+            v={weatherSummary || "No flight conditions captured yet."}
           />
 
           <Preview
             k="Narrative / Working Context"
             v={
               narrative ||
-              "No report narrative has been captured yet. Once available, this area can support extraction, review, and source-backed interpretation."
+              "No working narrative has been captured yet. Once available, this area can support extraction, review, and source-backed interpretation."
             }
           />
 
@@ -279,7 +280,7 @@ export function FormPreviewPanel() {
             v={
               projectInsights?.length
                 ? projectInsights.map((x) => `• ${x}`).join("\n")
-                : "No review signals yet. Once a project is matched, this section explains what the system inferred and why."
+                : "No review signals yet. Once a match is found, this section explains what the system inferred and why."
             }
             preserveLines
           />
@@ -288,10 +289,10 @@ export function FormPreviewPanel() {
         <div className="mt-6 grid grid-cols-1 gap-3">
           <ListBlock
             icon={<Building2 className="h-4 w-4" />}
-            title="Linked Companies"
-            empty="No linked companies shown yet."
+            title="Linked Entities"
+            empty="No linked entities shown yet."
             items={(projectCompanies || []).slice(0, 8).map((c) => ({
-              title: c.company_name || "Unknown company",
+              title: c.company_name || "Unknown entity",
               subtitle: [c.industry, c.country, c.company_ticker]
                 .filter(Boolean)
                 .join(" • "),
@@ -300,10 +301,10 @@ export function FormPreviewPanel() {
 
           <ListBlock
             icon={<BarChart3 className="h-4 w-4" />}
-            title="Top Metrics"
-            empty="No project metrics shown yet."
+            title="Top Signals"
+            empty="No structured signal metrics shown yet."
             items={(projectMetrics || []).slice(0, 8).map((m) => ({
-              title: m.parameter || "Unknown metric",
+              title: m.parameter || "Unknown signal",
               subtitle: [m.facility_type, m.unit_value, m.unit_name]
                 .filter((x) => x !== null && x !== undefined && String(x).trim() !== "")
                 .join(" • "),
@@ -314,12 +315,12 @@ export function FormPreviewPanel() {
         <div className="mt-6 grid grid-cols-1 gap-3">
           <Preview
             k="Source Ladder Note"
-            v="Level 1 sources carry the strongest authority. Lower levels may still be useful, but they are more interpretive and should be reviewed in context."
+            v="Level 1 sources carry the strongest confidence. Lower levels may still be useful, but they are more interpretive and should be reviewed in context."
           />
 
           <Preview
             k="Future Expansion"
-            v="This panel can later include explicit match reasons, hazard categories, source links, confidence notes, flagged reasoning, and export-ready summaries for different stakeholder roles."
+            v="This panel can later include explicit match reasons, asset and operator summaries, relationship intelligence, public contact discovery, social/account matches, confidence notes, opportunity scoring, source links, and export-ready briefs."
           />
         </div>
       </div>
@@ -371,7 +372,7 @@ function MiniStat({
         {icon}
         <div className="text-[10px] uppercase tracking-wide">{label}</div>
       </div>
-      <div className="mt-2 font-medium text-zinc-200 break-words">{value}</div>
+      <div className="mt-2 break-words font-medium text-zinc-200">{value}</div>
     </div>
   );
 }

@@ -1,102 +1,68 @@
 "use client";
 
 import React, { useEffect, useMemo, useState } from "react";
-import { AppShell } from "@/src/app/components/shell/AppShell";
-import { Card } from "@/src/app/components/ui/Card";
-import { Button } from "@/src/app/components/ui/Button";
-import { useAppState } from "@/src/app/components/state/AppState";
 import {
-  AlertTriangle,
+  PhoneCall,
+  Plane,
+  Star,
+  RefreshCw,
+  Send,
+  MessageCircle,
+  Car,
   Building2,
-  FileSearch,
-  MessageSquareText,
-  ShieldCheck,
-  UserCheck,
-  Clock3,
-  Link2,
-  CheckCircle2,
-  Upload,
-  FileUp,
-  Mail,
-  Smartphone,
+  Waves,
+  ChevronRight,
 } from "lucide-react";
 
-type ActionStatus = "Open" | "In Review" | "Assigned" | "Closed";
+type DealMood = "business" | "lifestyle";
+type DealSource =
+  | "victor"
+  | "privatefly"
+  | "globeair"
+  | "operator"
+  | "csv"
+  | "manual";
 
-type CoordinationMessage = {
-  id: string;
-  author: string;
-  createdAt: number;
-  text: string;
-  sourceChannel?: "web" | "email" | "sms" | "upload";
-  projectId?: string | number;
+type DealCardItem = {
+  id: string | number;
+  source?: DealSource;
+  routeLabel: string;
+  depUtc: string;
+  arrUtc?: string | null;
+  seatsAvailable?: number | null;
+  minPriceUsd?: number | null;
+  aircraftType?: string | null;
+  operatorName?: string | null;
+  publishStatus?: "candidate" | "approved" | "published" | "expired" | "rejected" | null;
+  mood?: DealMood;
+  imageUrl?: string | null;
+  packageHint?: string | null;
+  updatedAt?: string | null;
 };
 
-type InterventionItem = {
-  id: string;
-  title: string;
-  why: string;
-  owner: string;
-  due: string;
-  status: ActionStatus;
+type DealFeedFilters = {
+  topNineOnly: boolean;
+  urgentOnly: boolean;
+  victorOnly: boolean;
 };
 
-type UploadSuggestion = {
-  projectId: string | number;
-  projectName: string;
-  location?: string;
-  reason?: string;
+type FlightRequestForm = {
+  route: string;
+  date: string;
+  passengers: string;
+  budget: string;
+  contact: string;
+  service: string;
 };
 
-type UploadResponse = {
-  ok: boolean;
-  detectedType: string;
-  detectedUse: string;
-  confidence: string;
-  summary: {
-    rows: number;
-    columns: number;
-    detectedType: string;
-    confidence: string;
-  };
-  columns: string[];
-  possibleProjectLinks: UploadSuggestion[];
-  whyThisMatters: string[];
-  rows: Record<string, any>[];
-};
-
-type ThreadSummary = {
-  count: number;
-  channels: string[];
-  linkedProject: null | {
-    projectId?: string | number;
-    projectName?: string;
-  };
-  linkedUpload: null | {
-    uploadId?: string;
-    uploadName?: string;
-    detectedType?: string;
-  };
-};
-
-type ThreadResponse = {
-  ok: boolean;
-  summary: ThreadSummary;
-  messages: Array<{
-    id: string;
-    createdAt: number;
-    from: string;
-    text: string;
-    sourceChannel?: "web" | "email" | "sms" | "upload";
-    linkedContext?: {
-      projectId?: string | number;
-      projectName?: string;
-      uploadId?: string;
-      uploadName?: string;
-      detectedType?: string;
-    };
-  }>;
-};
+const SELLABLE_SOURCES: DealSource[] = [
+  "victor",
+  "privatefly",
+  "globeair",
+  "operator",
+  "csv",
+  "manual",
+];
 
 function uid() {
   return typeof crypto !== "undefined" && "randomUUID" in crypto
@@ -104,769 +70,688 @@ function uid() {
     : String(Date.now() + Math.random());
 }
 
-async function fetchCoordinationThread(projectId?: string | number | null, uploadId?: string | null) {
-  const qs = new URLSearchParams();
-  qs.set("scope", "review_thread");
-
-  if (projectId !== null && projectId !== undefined) {
-    qs.set("projectId", String(projectId));
-  }
-
-  if (uploadId) {
-    qs.set("uploadId", uploadId);
-  }
-
-  const r = await fetch(`/api/team-chat?${qs.toString()}`);
-  const data = (await r.json().catch(() => ({}))) as ThreadResponse;
-
-  if (!r.ok) {
-    throw new Error("Failed to load coordination thread");
-  }
-
-  return data;
+function isSellableSource(source?: DealSource) {
+  return source ? SELLABLE_SOURCES.includes(source) : false;
 }
 
-async function postCoordinationMessage(payload: {
-  text: string;
-  from: string;
-  sourceChannel?: "web" | "email" | "sms" | "upload";
-  projectId?: string | number | null;
-  projectName?: string | null;
-  uploadId?: string | null;
-  uploadName?: string | null;
-  detectedType?: string | null;
-}) {
-  const r = await fetch("/api/team-chat", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      scope: "review_thread",
-      from: payload.from,
-      text: payload.text,
-      sourceChannel: payload.sourceChannel || "web",
-      linkedContext: {
-        projectId: payload.projectId ?? undefined,
-        projectName: payload.projectName ?? undefined,
-        uploadId: payload.uploadId ?? undefined,
-        uploadName: payload.uploadName ?? undefined,
-        detectedType: payload.detectedType ?? undefined,
-      },
-    }),
+function formatDealTime(iso?: string | null) {
+  if (!iso) return "Time TBD";
+  const d = new Date(iso);
+  return d.toLocaleString([], {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
   });
-
-  const data = await r.json().catch(() => ({}));
-  if (!r.ok) {
-    throw new Error(data?.error || "Failed to send coordination message");
-  }
-
-  return data;
 }
 
-export default function ShiftReportPage() {
-  const {
-    selectedForm,
-    projectId,
-    projectName,
-    projectSummary,
-    projectStage,
-    projectLocation,
-    sectorRoot,
-    coordinationBurden,
-    reviewSensitivity,
-    environment,
-    complexity,
-    projectInsights,
-    projectCompanies,
-    projectMetrics,
-  } = useAppState();
+function getUrgency(depUtc: string) {
+  const now = Date.now();
+  const dep = new Date(depUtc).getTime();
+  const diffHours = (dep - now) / (1000 * 60 * 60);
+  if (diffHours <= 24) return "urgent";
+  if (diffHours <= 48) return "soon";
+  return "normal";
+}
 
-  const [reviewArea, setReviewArea] = useState("Team Bravo / Electrical Coordination");
-  const [question, setQuestion] = useState("");
-  const [analystAnswer, setAnalystAnswer] = useState(
-    "Ask about what this context means, what should be reviewed next, or how to communicate the issue to a safety committee."
-  );
+function buildWhatsAppUrl(phone: string, text: string) {
+  const cleaned = phone.replace(/[^\d]/g, "");
+  return `https://wa.me/${cleaned}?text=${encodeURIComponent(text)}`;
+}
 
-  const [threadInput, setThreadInput] = useState("");
-  const [thread, setThread] = useState<CoordinationMessage[]>([]);
-  const [threadSummary, setThreadSummary] = useState<ThreadSummary>({
-    count: 0,
-    channels: [],
-    linkedProject: null,
-    linkedUpload: null,
-  });
-  const [threadLoading, setThreadLoading] = useState(false);
+function buildTelUrl(phone: string) {
+  return `tel:${phone.replace(/[^\d+]/g, "")}`;
+}
 
-  const [actions, setActions] = useState<InterventionItem[]>([
-    {
-      id: uid(),
-      title: "Review contractor coordination exposure",
-      why: "Project context suggests higher coordination complexity based on linked companies.",
-      owner: "Site Supervisor",
-      due: "Next toolbox talk",
-      status: "Assigned",
-    },
-    {
-      id: uid(),
-      title: "Confirm review priority with committee",
-      why: "Execution-stage work is being treated as more review-sensitive in the current context.",
-      owner: "Safety Coordinator",
-      due: "This week",
-      status: "Open",
-    },
-  ]);
+function defaultImageForRoute(routeLabel: string) {
+  const r = routeLabel.toLowerCase();
+  if (r.includes("vegas")) return "https://images.unsplash.com/photo-1572030281108-3aa7b1f0b4df?q=80&w=1600&auto=format&fit=crop";
+  if (r.includes("miami")) return "https://images.unsplash.com/photo-1506966953602-c20cc11f75e3?q=80&w=1600&auto=format&fit=crop";
+  if (r.includes("ibiza")) return "https://images.unsplash.com/photo-1507525428034-b723cf961d3e?q=80&w=1600&auto=format&fit=crop";
+  if (r.includes("aspen")) return "https://images.unsplash.com/photo-1516483638261-f4dbaf036963?q=80&w=1600&auto=format&fit=crop";
+  if (r.includes("dubai")) return "https://images.unsplash.com/photo-1512453979798-5ea266f8880c?q=80&w=1600&auto=format&fit=crop";
+  if (r.includes("nassau")) return "https://images.unsplash.com/photo-1500375592092-40eb2168fd21?q=80&w=1600&auto=format&fit=crop";
+  return "https://images.unsplash.com/photo-1473448912268-2022ce9509d8?q=80&w=1600&auto=format&fit=crop";
+}
 
-  const [uploading, setUploading] = useState(false);
-  const [uploadResult, setUploadResult] = useState<UploadResponse | null>(null);
-  const [linkedUploadId, setLinkedUploadId] = useState<string | null>(null);
-  const [linkedUploadName, setLinkedUploadName] = useState<string | null>(null);
+function normalizeDealMood(routeLabel: string): DealMood {
+  return /miami|ibiza|vegas|aspen|nassau|nice/i.test(routeLabel) ? "lifestyle" : "business";
+}
 
-  const [reviewStatus, setReviewStatus] = useState<"idle" | "sending" | "sent">("idle");
+function normalizePackageHint(routeLabel: string, mood: DealMood) {
+  if (mood === "business") return "Executive routing handled directly";
+  if (/miami/i.test(routeLabel)) return "Beachfront stay + chauffeur available";
+  if (/ibiza/i.test(routeLabel)) return "Villa + concierge available";
+  if (/vegas/i.test(routeLabel)) return "Chauffeur + nightlife access available";
+  if (/aspen/i.test(routeLabel)) return "Chalet transfer + concierge available";
+  return "Handled on request";
+}
 
-  const supportLabel = useMemo(() => {
-    const f = (selectedForm || "").toLowerCase();
-    if (f.includes("source")) return "Level 1–2 emphasized";
-    if (f.includes("trend")) return "Level 2–3 emphasized";
-    if (f.includes("summary")) return "Mixed support view";
-    if (f.includes("incident")) return "Pending source mapping";
-    return "Context-driven support";
-  }, [selectedForm]);
+function recentlyUpdated(updatedAt?: string | null) {
+  if (!updatedAt) return false;
+  return Date.now() - new Date(updatedAt).getTime() < 10 * 60 * 1000;
+}
 
-  const linkedCompanyCount = projectCompanies?.length || 0;
-  const topCompanies = (projectCompanies || []).slice(0, 5);
-  const topMetrics = (projectMetrics || []).slice(0, 5);
+function normalizeDealRow(row: any): DealCardItem | null {
+  const source = (row.source || "manual") as DealSource;
+  const publishStatus = row.publishStatus || row.publish_status || null;
+  if (!isSellableSource(source)) return null;
+  if (publishStatus && publishStatus !== "published") return null;
 
-  useEffect(() => {
-    let cancelled = false;
-
-    async function loadThread() {
-      try {
-        setThreadLoading(true);
-        const data = await fetchCoordinationThread(projectId, linkedUploadId);
-
-        if (cancelled) return;
-
-        setThread(
-          (data.messages || []).map((m) => ({
-            id: m.id,
-            author: m.from,
-            createdAt: m.createdAt,
-            text: m.text,
-            sourceChannel: m.sourceChannel,
-            projectId: m.linkedContext?.projectId,
-          }))
-        );
-        setThreadSummary(
-          data.summary || {
-            count: 0,
-            channels: [],
-            linkedProject: null,
-            linkedUpload: null,
-          }
-        );
-      } catch {
-        if (!cancelled) {
-          setThread([]);
-        }
-      } finally {
-        if (!cancelled) setThreadLoading(false);
-      }
-    }
-
-    loadThread();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [projectId, linkedUploadId]);
-
-  function askAnalyst() {
-    const q = question.trim();
-    if (!q) return;
-
-    const answer = [
-      `Current context is ${coordinationBurden || "undetermined"} coordination and ${reviewSensitivity || "undetermined"} review sensitivity.`,
-      projectSummary ? `Project summary: ${projectSummary}` : null,
-      uploadResult?.detectedUse
-        ? `Uploaded context is currently being treated as ${uploadResult.detectedUse}.`
-        : null,
-      q.toLowerCase().includes("why")
-        ? `This context is being prioritized because the matched project is ${
-            projectStage ? `${projectStage.toLowerCase()} stage` : "currently active"
-          } and linked to ${linkedCompanyCount} company records.`
-        : null,
-      q.toLowerCase().includes("next")
-        ? `Recommended next step: assign a reviewer, clarify what needs confirmation, and capture whether this is a contextual concern or an observed field issue.`
-        : null,
-      `These are decision-support signals, not confirmed safety findings.`,
+  const routeLabel =
+    row.routeLabel ||
+    row.route_label ||
+    [
+      row.originLabel || row.origin_label || row.originIcao || row.origin_icao,
+      row.destLabel || row.dest_label || row.destIcao || row.dest_icao,
     ]
       .filter(Boolean)
-      .join(" ");
+      .join(" → ");
 
-    setAnalystAnswer(answer);
-    setQuestion("");
-  }
+  if (!routeLabel) return null;
 
-  async function sendThreadMessage() {
-    const text = threadInput.trim();
-    if (!text) return;
+  const depUtc = row.depUtc || row.dep_utc;
+  if (!depUtc) return null;
 
-    try {
-      const data = await postCoordinationMessage({
-        text,
-        from: "You",
-        sourceChannel: "web",
-        projectId,
-        projectName,
-        uploadId: linkedUploadId,
-        uploadName: linkedUploadName,
-        detectedType: uploadResult?.detectedType || null,
-      });
+  const mood = (row.mood as DealMood) || normalizeDealMood(routeLabel);
 
-      const saved = data?.message;
-      if (saved) {
-        setThread((prev) => [
-          ...prev,
-          {
-            id: saved.id,
-            author: saved.from,
-            createdAt: saved.createdAt,
-            text: saved.text,
-            sourceChannel: saved.sourceChannel,
-            projectId: saved.linkedContext?.projectId,
-          },
-        ]);
-      }
-
-      setThreadInput("");
-    } catch {
-      setThreadInput((prev) => prev || "Could not send message");
-    }
-  }
-
-  function updateActionStatus(id: string, status: ActionStatus) {
-    setActions((prev) =>
-      prev.map((item) => (item.id === id ? { ...item, status } : item))
-    );
-  }
-
-  async function handleUpload(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0];
-    if (!file) return;
-
-    setUploading(true);
-    setUploadResult(null);
-
-    try {
-      const formData = new FormData();
-      formData.append("file", file);
-
-      const r = await fetch("/api/upload-shift", {
-        method: "POST",
-        body: formData,
-      });
-
-      const data = (await r.json().catch(() => ({}))) as UploadResponse;
-
-      if (!r.ok || !data?.ok) {
-        throw new Error("Upload failed");
-      }
-
-      setUploadResult(data);
-
-      const uploadId = uid();
-      setLinkedUploadId(uploadId);
-      setLinkedUploadName(file.name);
-
-      const topMatch = data.possibleProjectLinks?.[0];
-
-      await postCoordinationMessage({
-        from: "Safety Tracker",
-        text: topMatch
-          ? `Uploaded file "${file.name}" was classified as ${data.detectedUse} and may relate to project "${topMatch.projectName}".`
-          : `Uploaded file "${file.name}" was classified as ${data.detectedUse}.`,
-        sourceChannel: "upload",
-        projectId: topMatch?.projectId ?? projectId ?? null,
-        projectName: topMatch?.projectName ?? projectName ?? null,
-        uploadId,
-        uploadName: file.name,
-        detectedType: data.detectedType,
-      });
-    } catch {
-      setUploadResult(null);
-    } finally {
-      setUploading(false);
-    }
-  }
-
-  function buildReviewExplanation() {
-    const lines = [
-      projectName ? `Best matched project: ${projectName}.` : null,
-      projectSummary ? `Context summary: ${projectSummary}` : null,
-      projectStage
-        ? `The project appears to be in ${String(projectStage).toLowerCase()} stage.`
-        : null,
-      coordinationBurden
-        ? `Coordination complexity is being treated as ${String(coordinationBurden).toLowerCase()}.`
-        : null,
-      reviewSensitivity
-        ? `Review sensitivity is being treated as ${String(reviewSensitivity).toLowerCase()}.`
-        : null,
-      linkedCompanyCount
-        ? `The current context includes ${linkedCompanyCount} linked company records.`
-        : null,
-      uploadResult?.detectedUse
-        ? `The uploaded file is being treated as ${uploadResult.detectedUse}.`
-        : null,
-      uploadResult?.whyThisMatters?.length
-        ? `Why the uploaded file matters: ${uploadResult.whyThisMatters.join(" ")}`
-        : null,
-      `These are contextual decision-support signals, not confirmed safety findings.`,
-    ];
-
-    return lines.filter(Boolean).join(" ");
-  }
-
-  async function submitForReview() {
-    try {
-      setReviewStatus("sending");
-
-      const payload = {
-        adminEmail: "Team10@ConstructMatrix.net",
-        submittedAt: new Date().toISOString(),
-        sourceChannel: "web",
-        projectContext: {
-          projectId,
-          projectName,
-          projectStage,
-          projectLocation,
-          sectorRoot,
-          coordinationBurden,
-          reviewSensitivity,
-          environment,
-          complexity,
-        },
-        uploadContext: uploadResult
-          ? {
-              uploadId: linkedUploadId,
-              uploadName: linkedUploadName,
-              detectedType: uploadResult.detectedType,
-              detectedUse: uploadResult.detectedUse,
-            }
-          : {},
-        threadSummary,
-        aiExplanation: buildReviewExplanation(),
-        summary:
-          "This submission brings together matched project context, uploaded supporting context, coordination discussion, and assigned intervention items for reviewer approval.",
-        pendingChanges: actions,
-      };
-
-      const r = await fetch("/api/schedule-approval", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      });
-
-      const data = await r.json().catch(() => ({}));
-      if (!r.ok) {
-        throw new Error(data?.error || "Review submission failed");
-      }
-
-      setReviewStatus("sent");
-    } catch {
-      setReviewStatus("idle");
-    }
-  }
-
-  return (
-    <AppShell>
-      <Card>
-        <div className="flex flex-wrap items-start justify-between gap-3">
-          <div>
-            <h2 className="text-lg font-semibold">Intervention & Coordination Hub</h2>
-            <p className="mt-1 text-sm text-zinc-400">
-              Turn interpreted project context into coordinated safety review, uploaded supporting context, assigned actions, and committee-ready follow-up.
-            </p>
-          </div>
-
-          <div className="rounded-2xl bg-black/30 px-3 py-2 text-xs text-zinc-300 shadow-inner">
-            <span className="text-zinc-500">Mode:</span>{" "}
-            <span className="font-semibold text-sky-300">
-              {selectedForm || "Context Review"}
-            </span>
-            <span className="mx-2 text-zinc-600">•</span>
-            <span className="text-zinc-500">Coordination:</span>{" "}
-            <span className="text-amber-300">{coordinationBurden || "—"}</span>
-            <span className="mx-2 text-zinc-600">•</span>
-            <span className="text-zinc-500">Sensitivity:</span>{" "}
-            <span className="text-red-300">{reviewSensitivity || "—"}</span>
-          </div>
-        </div>
-
-        <div className="mt-6 grid gap-6 lg:grid-cols-3">
-          {/* LEFT */}
-          <div className="space-y-5 lg:col-span-1">
-            <SectionCard
-              icon={<Link2 className="h-4 w-4" />}
-              title="Linked Project Context"
-              subtitle="This is the current project context driving review."
-            >
-              <Detail label="Best Match" value={projectName || "No project matched yet"} />
-              <Detail label="Location" value={projectLocation || "—"} />
-              <Detail label="Stage" value={projectStage || "—"} />
-              <Detail label="Sector" value={sectorRoot || "—"} />
-              <Detail label="Environment" value={environment || "—"} />
-              <Detail label="Complexity" value={complexity || "—"} />
-            </SectionCard>
-
-            <SectionCard
-              icon={<FileUp className="h-4 w-4" />}
-              title="Upload Context File"
-              subtitle="Add a spreadsheet or export that may help explain project, workforce, contractor, or safety context."
-            >
-              <input
-                type="file"
-                accept=".csv,.xlsx"
-                onChange={handleUpload}
-                className="text-sm text-zinc-300"
-              />
-
-              <div className="mt-3 flex flex-wrap gap-2 text-xs text-zinc-500">
-                <span className="inline-flex items-center gap-1 rounded-full bg-black/30 px-2 py-1">
-                  <Upload className="h-3.5 w-3.5" />
-                  Web Upload
-                </span>
-                <span className="inline-flex items-center gap-1 rounded-full bg-black/30 px-2 py-1">
-                  <Mail className="h-3.5 w-3.5" />
-                  Email-ready
-                </span>
-                <span className="inline-flex items-center gap-1 rounded-full bg-black/30 px-2 py-1">
-                  <Smartphone className="h-3.5 w-3.5" />
-                  SMS-ready
-                </span>
-              </div>
-
-              {uploading && (
-                <div className="mt-3 rounded-2xl bg-black/30 p-3 text-sm text-zinc-300 shadow-inner">
-                  Uploading and classifying context file...
-                </div>
-              )}
-
-              {uploadResult && (
-                <div className="mt-4 space-y-3">
-                  <Detail
-                    label="Detected Use"
-                    value={`${uploadResult.detectedUse} (${uploadResult.confidence} confidence)`}
-                  />
-                  <Detail
-                    label="Summary"
-                    value={`${uploadResult.summary.rows} rows • ${uploadResult.summary.columns} columns • ${uploadResult.detectedType}`}
-                  />
-                  <Detail
-                    label="Why This Matters"
-                    value={uploadResult.whyThisMatters.join(" ")}
-                  />
-                  <Detail
-                    label="Possible Project Links"
-                    value={
-                      uploadResult.possibleProjectLinks?.length
-                        ? uploadResult.possibleProjectLinks
-                            .map((p) => `${p.projectName}${p.location ? ` • ${p.location}` : ""}`)
-                            .join(" | ")
-                        : "No likely project links detected."
-                    }
-                  />
-                </div>
-              )}
-            </SectionCard>
-
-            <SectionCard
-              icon={<UserCheck className="h-4 w-4" />}
-              title="Crew / Area Under Review"
-              subtitle="Use this to frame who or what the committee is reviewing."
-            >
-              <input
-                value={reviewArea}
-                onChange={(e) => setReviewArea(e.target.value)}
-                className="w-full rounded-xl bg-black/30 px-4 py-3 text-sm text-white outline-none shadow-[0_0_0_1px_rgba(255,255,255,.08)]"
-              />
-              <div className="mt-3 rounded-2xl bg-black/30 p-3 text-sm text-zinc-300 shadow-inner">
-                This review is currently framed around:{" "}
-                <span className="font-semibold text-zinc-100">{reviewArea}</span>
-              </div>
-            </SectionCard>
-
-            <SectionCard
-              icon={<FileSearch className="h-4 w-4" />}
-              title="Ask Safety Analyst"
-              subtitle="Ask what this context means or what should happen next."
-            >
-              <div className="space-y-3">
-                <input
-                  value={question}
-                  onChange={(e) => setQuestion(e.target.value)}
-                  placeholder="e.g. Why is this context being treated as higher priority?"
-                  className="w-full rounded-xl bg-black/30 px-4 py-3 text-sm text-white outline-none shadow-[0_0_0_1px_rgba(255,255,255,.08)]"
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter") askAnalyst();
-                  }}
-                />
-                <Button variant="primary" onClick={askAnalyst}>
-                  Ask Analyst
-                </Button>
-              </div>
-
-              <div className="mt-4 rounded-2xl bg-black/30 p-4 text-sm text-zinc-200 shadow-inner">
-                {analystAnswer}
-              </div>
-            </SectionCard>
-          </div>
-
-          {/* MIDDLE */}
-          <div className="space-y-5 lg:col-span-1">
-            <SectionCard
-              icon={<MessageSquareText className="h-4 w-4" />}
-              title="Safety Coordination Thread"
-              subtitle="A lightweight collaboration stream for committee and supervisor follow-up."
-            >
-              <div className="mb-3 rounded-2xl bg-black/30 p-3 text-sm text-zinc-300 shadow-inner">
-                <div className="text-[10px] uppercase tracking-wide text-zinc-500">
-                  Linked Context
-                </div>
-                <div className="mt-1 text-zinc-100">
-                  {threadSummary.linkedProject?.projectName || projectName || "No linked project context"}
-                </div>
-                <div className="mt-1 text-xs text-zinc-500">
-                  Channels: {threadSummary.channels?.length ? threadSummary.channels.join(", ") : "—"}
-                  {" • "}
-                  Messages: {threadSummary.count ?? 0}
-                </div>
-                {threadSummary.linkedUpload?.uploadName && (
-                  <div className="mt-1 text-xs text-zinc-400">
-                    Upload: {threadSummary.linkedUpload.uploadName} • {threadSummary.linkedUpload.detectedType || "unknown"}
-                  </div>
-                )}
-              </div>
-
-              <div className="max-h-[280px] space-y-2 overflow-auto rounded-2xl bg-black/30 p-3 shadow-inner">
-                {threadLoading ? (
-                  <div className="text-sm text-zinc-400">Loading thread...</div>
-                ) : thread.length ? (
-                  thread.map((m) => (
-                    <div key={m.id} className="rounded-2xl bg-white/5 px-3 py-2 text-sm text-zinc-200">
-                      <div className="flex items-center justify-between text-[11px] text-zinc-500">
-                        <span>
-                          {m.author}
-                          {m.sourceChannel ? ` • ${String(m.sourceChannel).toUpperCase()}` : ""}
-                        </span>
-                        <span>{new Date(m.createdAt).toLocaleTimeString()}</span>
-                      </div>
-                      <div className="mt-1">{m.text}</div>
-                    </div>
-                  ))
-                ) : (
-                  <div className="text-sm text-zinc-400">No coordination messages yet.</div>
-                )}
-              </div>
-
-              <div className="mt-3 flex items-center gap-2">
-                <input
-                  value={threadInput}
-                  onChange={(e) => setThreadInput(e.target.value)}
-                  placeholder="Add a coordination note or committee comment..."
-                  className="h-11 flex-1 rounded-2xl bg-black/30 px-4 text-sm text-zinc-100 outline-none shadow-[0_0_0_1px_rgba(255,255,255,.08)]"
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter") sendThreadMessage();
-                  }}
-                />
-                <Button variant="primary" onClick={sendThreadMessage}>
-                  Send
-                </Button>
-              </div>
-            </SectionCard>
-
-            <SectionCard
-              icon={<CheckCircle2 className="h-4 w-4" />}
-              title="Intervention Tracker"
-              subtitle="This is the accountability layer missing from many current workflows."
-            >
-              <div className="space-y-3">
-                {actions.map((item) => (
-                  <div
-                    key={item.id}
-                    className="rounded-2xl bg-black/30 p-3 shadow-inner"
-                  >
-                    <div className="font-semibold text-zinc-100">{item.title}</div>
-                    <div className="mt-1 text-sm text-zinc-400">{item.why}</div>
-
-                    <div className="mt-3 grid grid-cols-2 gap-3 text-xs text-zinc-400">
-                      <div>
-                        <span className="text-zinc-500">Owner:</span> {item.owner}
-                      </div>
-                      <div>
-                        <span className="text-zinc-500">Due:</span> {item.due}
-                      </div>
-                    </div>
-
-                    <div className="mt-3">
-                      <select
-                        value={item.status}
-                        onChange={(e) =>
-                          updateActionStatus(item.id, e.target.value as ActionStatus)
-                        }
-                        className="h-9 rounded-xl bg-white/5 px-3 text-xs text-zinc-200 outline-none shadow-[0_0_0_1px_rgba(255,255,255,.08)]"
-                      >
-                        <option>Open</option>
-                        <option>In Review</option>
-                        <option>Assigned</option>
-                        <option>Closed</option>
-                      </select>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </SectionCard>
-          </div>
-
-          {/* RIGHT */}
-          <div className="space-y-5 lg:col-span-1">
-            <SectionCard
-              icon={<AlertTriangle className="h-4 w-4" />}
-              title="Review Signals"
-              subtitle="Plain-language signals derived from the matched project context."
-            >
-              <Detail label="Context Summary" value={projectSummary || "No summary yet"} />
-              <Detail
-                label="Why This Matters"
-                value={
-                  projectInsights?.length
-                    ? projectInsights.join(" ")
-                    : "No interpreted signals yet."
-                }
-              />
-              <Detail
-                label="Important Note"
-                value="These are contextual decision-support signals, not confirmed safety findings."
-              />
-            </SectionCard>
-
-            <SectionCard
-              icon={<Building2 className="h-4 w-4" />}
-              title="Linked Companies"
-              subtitle="Used to help explain coordination complexity."
-            >
-              {topCompanies.length ? (
-                <div className="space-y-2">
-                  {topCompanies.map((c, i) => (
-                    <div key={i} className="rounded-xl bg-black/30 px-3 py-2 text-sm text-zinc-200 shadow-inner">
-                      <div className="font-medium">{c.company_name}</div>
-                      <div className="text-xs text-zinc-500">
-                        {[c.industry, c.country, c.company_ticker].filter(Boolean).join(" • ") || "—"}
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              ) : (
-                <EmptyState text="No linked companies shown yet." />
-              )}
-            </SectionCard>
-
-            <SectionCard
-              icon={<ShieldCheck className="h-4 w-4" />}
-              title="Source Support"
-              subtitle="Keeps the source-ladder framing visible in context."
-            >
-              <Detail label="Support View" value={supportLabel} />
-              <Detail
-                label="Source Ladder Note"
-                value="Higher-authority sources should anchor interpretation where possible. Lower-authority sources may still help explain context, but should not be treated the same way."
-              />
-            </SectionCard>
-
-            <SectionCard
-              icon={<Clock3 className="h-4 w-4" />}
-              title="Top Metrics / Next Step"
-              subtitle="Useful follow-up prompts for a supervisor or committee."
-            >
-              {topMetrics.length ? (
-                <div className="space-y-2">
-                  {topMetrics.map((m, i) => (
-                    <div key={i} className="rounded-xl bg-black/30 px-3 py-2 text-sm text-zinc-200 shadow-inner">
-                      <div className="font-medium">{m.parameter || "Unknown metric"}</div>
-                      <div className="text-xs text-zinc-500">
-                        {[m.facility_type, m.unit_value, m.unit_name].filter(Boolean).join(" • ") || "—"}
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              ) : (
-                <EmptyState text="No project metrics shown yet." />
-              )}
-
-              <div className="mt-4 rounded-2xl bg-black/30 p-3 text-sm text-zinc-300 shadow-inner">
-                Recommended next step: confirm whether this is only contextual concern or an observed field issue, assign an owner, and document follow-up in the intervention tracker.
-              </div>
-
-              <div className="mt-4 flex gap-2">
-                <Button
-                  variant="primary"
-                  onClick={submitForReview}
-                  disabled={reviewStatus === "sending"}
-                >
-                  {reviewStatus === "sending"
-                    ? "Submitting..."
-                    : reviewStatus === "sent"
-                    ? "Submitted"
-                    : "Submit for Review"}
-                </Button>
-              </div>
-            </SectionCard>
-          </div>
-        </div>
-      </Card>
-    </AppShell>
-  );
+  return {
+    id: row.id ?? uid(),
+    source,
+    routeLabel,
+    depUtc,
+    arrUtc: row.arrUtc || row.arr_utc || null,
+    seatsAvailable: row.seatsAvailable ?? row.seats_available ?? row.seats ?? null,
+    minPriceUsd: row.minPriceUsd ?? row.min_price_usd ?? row.priceUsd ?? row.price_usd ?? null,
+    aircraftType: row.aircraftType || row.aircraft_type || null,
+    operatorName: row.operatorName || row.operator_name || null,
+    publishStatus: publishStatus || "published",
+    mood,
+    imageUrl: row.imageUrl || row.image_url || defaultImageForRoute(routeLabel),
+    packageHint: row.packageHint || row.package_hint || normalizePackageHint(routeLabel, mood),
+    updatedAt: row.updatedAt || row.updated_at || null,
+  };
 }
 
-function SectionCard({
-  icon,
-  title,
-  subtitle,
-  children,
-}: {
-  icon: React.ReactNode;
-  title: string;
-  subtitle: string;
-  children: React.ReactNode;
-}) {
+export default function NousAviationPage() {
+  const salesWhatsappNumber = process.env.NEXT_PUBLIC_SALES_WHATSAPP || "";
+  const salesPhoneNumber = process.env.NEXT_PUBLIC_SALES_PHONE || salesWhatsappNumber;
+  const telegramBotUrl = process.env.NEXT_PUBLIC_TELEGRAM_BOT_URL || "";
+
+  const [filters, setFilters] = useState<DealFeedFilters>({
+    topNineOnly: true,
+    urgentOnly: false,
+    victorOnly: false,
+  });
+
+  const [deals, setDeals] = useState<DealCardItem[]>([]);
+  const [dealsLoading, setDealsLoading] = useState(true);
+  const [dealsRefreshing, setDealsRefreshing] = useState(false);
+  const [dealsError, setDealsError] = useState<string | null>(null);
+  const [lastUpdatedAt, setLastUpdatedAt] = useState<string | null>(null);
+
+  const [requestSent, setRequestSent] = useState<string | null>(null);
+  const [form, setForm] = useState<FlightRequestForm>({
+    route: "",
+    date: "",
+    passengers: "",
+    budget: "",
+    contact: "",
+    service: "Flight",
+  });
+
+  async function loadDeals(isManualRefresh = false) {
+    if (isManualRefresh) setDealsRefreshing(true);
+    else setDealsLoading(true);
+    setDealsError(null);
+
+    try {
+      const qs = new URLSearchParams();
+      qs.set("limit", filters.topNineOnly ? "18" : "50");
+      qs.set("publishedOnly", "true");
+      if (filters.victorOnly) qs.set("source", "victor");
+      if (filters.urgentOnly) qs.set("urgentOnly", "true");
+
+      const res = await fetch(`/api/empty-legs/featured?${qs.toString()}`, { cache: "no-store" });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data?.ok) throw new Error(data?.error || "Failed to load live inventory");
+
+      const rawRows = Array.isArray(data?.rows)
+        ? data.rows
+        : Array.isArray(data?.deals)
+        ? data.deals
+        : [];
+
+      const normalized = rawRows
+        .map(normalizeDealRow)
+        .filter((row: any): row is DealCardItem => Boolean(row));
+
+      setDeals(normalized);
+      setLastUpdatedAt(new Date().toISOString());
+    } catch (err: any) {
+      setDealsError(String(err?.message || err || "Failed to load live inventory"));
+      setDeals([]);
+    } finally {
+      setDealsLoading(false);
+      setDealsRefreshing(false);
+    }
+  }
+
+  useEffect(() => {
+    loadDeals(false);
+  }, [filters.topNineOnly, filters.urgentOnly, filters.victorOnly]);
+
+  useEffect(() => {
+    const timer = setInterval(() => loadDeals(true), 5 * 60 * 1000);
+    return () => clearInterval(timer);
+  }, [filters.topNineOnly, filters.urgentOnly, filters.victorOnly]);
+
+  const prioritizedDeals = useMemo(() => {
+    let filtered = [...deals];
+    if (filters.victorOnly) filtered = filtered.filter((d) => d.source === "victor");
+    if (filters.urgentOnly) filtered = filtered.filter((d) => getUrgency(d.depUtc) !== "normal");
+    filtered.sort((a, b) => {
+      const aUrgent = getUrgency(a.depUtc) === "urgent" ? 1 : 0;
+      const bUrgent = getUrgency(b.depUtc) === "urgent" ? 1 : 0;
+      if (bUrgent !== aUrgent) return bUrgent - aUrgent;
+      return new Date(a.depUtc).getTime() - new Date(b.depUtc).getTime();
+    });
+    return filters.topNineOnly ? filtered.slice(0, 9) : filtered;
+  }, [deals, filters]);
+
+  const featuredDeals = prioritizedDeals.slice(0, 3);
+  const secondaryDeals = prioritizedDeals.slice(3, 9);
+
+  function updateForm<K extends keyof FlightRequestForm>(key: K, value: FlightRequestForm[K]) {
+    setForm((prev) => ({ ...prev, [key]: value }));
+  }
+
+  function handleRequestSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    const text = [
+      `New request from Nous Aviation`,
+      `Service: ${form.service || "Flight"}`,
+      `Route: ${form.route || "Not provided"}`,
+      `Date: ${form.date || "Flexible"}`,
+      `Passengers: ${form.passengers || "Not provided"}`,
+      `Budget: ${form.budget || "Not provided"}`,
+      `Contact: ${form.contact || "Not provided"}`,
+    ].join("\n");
+
+    if (salesWhatsappNumber) {
+      window.open(buildWhatsAppUrl(salesWhatsappNumber, text), "_blank", "noopener,noreferrer");
+      setRequestSent("Request opened in WhatsApp.");
+      return;
+    }
+
+    setRequestSent("Set NEXT_PUBLIC_SALES_WHATSAPP to enable direct requests.");
+  }
+
   return (
-    <div className="rounded-3xl bg-white/5 p-5 shadow-[0_0_0_1px_rgba(255,255,255,.08)]">
-      <div className="flex items-start gap-3">
-        <div className="grid h-9 w-9 place-items-center rounded-2xl bg-black/30 text-zinc-200">
-          {icon}
-        </div>
-        <div>
-          <div className="text-xs font-semibold uppercase text-zinc-400">{title}</div>
-          <div className="mt-1 text-xs text-zinc-500">{subtitle}</div>
+    <div className="min-h-screen bg-[#05070A] text-white">
+      <div className="mx-auto max-w-[1400px] px-4 py-6 sm:px-6 lg:px-8">
+        <div className="rounded-[32px] border border-white/10 bg-[radial-gradient(circle_at_top,rgba(198,165,92,0.14),transparent_30%),rgba(255,255,255,0.03)] p-5 backdrop-blur-xl sm:p-8">
+          <section className="flex flex-wrap items-start justify-between gap-6">
+            <div className="max-w-3xl">
+              <div className="mb-3 inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-3 py-1 text-[11px] uppercase tracking-[0.18em] text-zinc-400">
+                <Star className="h-3.5 w-3.5 text-[#C6A55C]" />
+                Nous Aviation
+              </div>
+              <h1 className="text-4xl font-semibold tracking-tight text-white sm:text-5xl">
+                Private Flights & Luxury Travel, Ready to Book.
+              </h1>
+              <p className="mt-3 max-w-2xl text-sm text-zinc-400 sm:text-base">
+                Empty legs, on-demand charter, villas, exotic rentals, chauffeur and concierge — handled directly.
+              </p>
+
+              <div className="mt-6 flex flex-wrap gap-3">
+                {salesWhatsappNumber && (
+                  <a
+                    href={buildWhatsAppUrl(salesWhatsappNumber, "I want to request a private flight.")}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="inline-flex items-center gap-2 rounded-xl bg-[#C6A55C] px-5 py-3 text-sm font-medium text-black hover:opacity-90"
+                  >
+                    <MessageCircle className="h-4 w-4" />
+                    WhatsApp Now
+                  </a>
+                )}
+
+                {telegramBotUrl && (
+                  <a
+                    href={telegramBotUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="inline-flex items-center gap-2 rounded-xl border border-white/10 bg-white/5 px-5 py-3 text-sm text-white hover:bg-white/10"
+                  >
+                    <Send className="h-4 w-4" />
+                    Telegram Bot
+                  </a>
+                )}
+
+                {salesPhoneNumber && (
+                  <a
+                    href={buildTelUrl(salesPhoneNumber)}
+                    className="inline-flex items-center gap-2 rounded-xl border border-white/10 bg-white/5 px-5 py-3 text-sm text-white hover:bg-white/10"
+                  >
+                    <PhoneCall className="h-4 w-4" />
+                    Call Now
+                  </a>
+                )}
+              </div>
+            </div>
+
+            <div className="rounded-2xl border border-white/10 bg-[rgba(255,255,255,0.04)] px-4 py-3 text-xs text-zinc-300 backdrop-blur-xl">
+              <div>
+                <span className="text-zinc-500">Live Flights:</span>{" "}
+                <span className="font-semibold text-white">{prioritizedDeals.length}</span>
+                <span className="mx-2 text-zinc-600">•</span>
+                <span className="text-zinc-500">Featured:</span>{" "}
+                <span className="text-[#C6A55C]">{featuredDeals.length}</span>
+                <span className="mx-2 text-zinc-600">•</span>
+                <span className="text-zinc-500">Urgent:</span>{" "}
+                <span className="text-red-300">
+                  {prioritizedDeals.filter((d) => getUrgency(d.depUtc) === "urgent").length}
+                </span>
+              </div>
+              <div className="mt-1 text-[11px] text-zinc-500">
+                {lastUpdatedAt ? `Updated ${new Date(lastUpdatedAt).toLocaleTimeString()}` : "Waiting for live inventory"}
+              </div>
+            </div>
+          </section>
+
+          <section className="mt-10 rounded-3xl border border-white/10 bg-[rgba(255,255,255,0.035)] p-5 backdrop-blur-xl">
+            <div className="flex flex-wrap items-center gap-2">
+              <ToggleChip active={filters.topNineOnly} onClick={() => setFilters((p) => ({ ...p, topNineOnly: !p.topNineOnly }))}>
+                Top 9
+              </ToggleChip>
+              <ToggleChip active={filters.urgentOnly} onClick={() => setFilters((p) => ({ ...p, urgentOnly: !p.urgentOnly }))}>
+                Urgent Only
+              </ToggleChip>
+              <ToggleChip active={filters.victorOnly} onClick={() => setFilters((p) => ({ ...p, victorOnly: !p.victorOnly }))}>
+                Victor Only
+              </ToggleChip>
+
+              <button
+                onClick={() => loadDeals(true)}
+                className="ml-auto inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-3 py-1.5 text-xs text-zinc-300 hover:bg-white/10"
+              >
+                <RefreshCw className={`h-3.5 w-3.5 ${dealsRefreshing ? "animate-spin" : ""}`} />
+                Refresh
+              </button>
+            </div>
+
+            {dealsLoading && (
+              <div className="mt-4 rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-zinc-300">
+                Loading live flights...
+              </div>
+            )}
+
+            {dealsError && (
+              <div className="mt-4 rounded-2xl border border-red-500/20 bg-red-500/5 px-4 py-3 text-sm text-red-300">
+                {dealsError}
+              </div>
+            )}
+
+            {!dealsLoading && !dealsError && prioritizedDeals.length === 0 && (
+              <div className="mt-4 rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-zinc-300">
+                No live flights available yet.
+              </div>
+            )}
+
+            {prioritizedDeals.length > 0 && (
+              <>
+                <div className="mt-5 grid gap-4 lg:grid-cols-3">
+                  {featuredDeals.map((deal) => (
+                    <FeaturedDealCard
+                      key={deal.id}
+                      deal={deal}
+                      salesWhatsappNumber={salesWhatsappNumber}
+                      salesPhoneNumber={salesPhoneNumber}
+                      telegramBotUrl={telegramBotUrl}
+                    />
+                  ))}
+                </div>
+
+                <div className="mt-5 grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+                  {secondaryDeals.map((deal) => (
+                    <CompactDealCard
+                      key={deal.id}
+                      deal={deal}
+                      salesWhatsappNumber={salesWhatsappNumber}
+                      salesPhoneNumber={salesPhoneNumber}
+                      telegramBotUrl={telegramBotUrl}
+                    />
+                  ))}
+                </div>
+              </>
+            )}
+          </section>
+
+          <section className="mt-10 grid gap-6 lg:grid-cols-4">
+            <ServiceCard
+              icon={<Building2 className="h-4 w-4" />}
+              title="Villas"
+              text="Private stays arranged on request."
+              href={salesWhatsappNumber ? buildWhatsAppUrl(salesWhatsappNumber, "I want to request a villa.") : undefined}
+              label="Request Villa"
+            />
+            <ServiceCard
+              icon={<Car className="h-4 w-4" />}
+              title="Exotic Rentals"
+              text="Rolls-Royce, Ferrari, Lamborghini and chauffeur options."
+              href={salesWhatsappNumber ? buildWhatsAppUrl(salesWhatsappNumber, "I want to request an exotic rental.") : undefined}
+              label="Request Rental"
+            />
+            <ServiceCard
+              icon={<Car className="h-4 w-4" />}
+              title="Chauffeur"
+              text="Airport, hotel and city transfers handled directly."
+              href={salesWhatsappNumber ? buildWhatsAppUrl(salesWhatsappNumber, "I want to request chauffeur service.") : undefined}
+              label="Request Chauffeur"
+            />
+            <ServiceCard
+              icon={<Waves className="h-4 w-4" />}
+              title="Yacht & Concierge"
+              text="Additional experiences arranged after flight confirmation."
+              href={salesWhatsappNumber ? buildWhatsAppUrl(salesWhatsappNumber, "I want to request yacht or concierge service.") : undefined}
+              label="Request Concierge"
+            />
+          </section>
+
+          <section className="mt-10 grid gap-8 lg:grid-cols-[1.15fr_0.85fr]">
+            <div className="rounded-3xl border border-white/10 bg-[rgba(255,255,255,0.04)] p-5 backdrop-blur-xl">
+              <div className="mb-4">
+                <div className="text-xs font-semibold uppercase tracking-[0.14em] text-zinc-400">Request a Flight</div>
+                <div className="mt-1 text-sm text-zinc-500">Send your request directly and we’ll handle the rest.</div>
+              </div>
+
+              <form onSubmit={handleRequestSubmit} className="grid gap-3 sm:grid-cols-2">
+                <Input value={form.route} onChange={(v) => updateForm("route", v)} placeholder="Route (e.g. NYC → Miami)" />
+                <Input value={form.date} onChange={(v) => updateForm("date", v)} placeholder="Date" />
+                <Input value={form.passengers} onChange={(v) => updateForm("passengers", v)} placeholder="Passengers" />
+                <Input value={form.budget} onChange={(v) => updateForm("budget", v)} placeholder="Budget (optional)" />
+                <Input value={form.contact} onChange={(v) => updateForm("contact", v)} placeholder="WhatsApp or phone" className="sm:col-span-2" />
+
+                <div className="sm:col-span-2 flex flex-wrap gap-3 pt-2">
+                  <select
+                    value={form.service}
+                    onChange={(e) => updateForm("service", e.target.value)}
+                    className="h-12 rounded-xl border border-white/10 bg-[rgba(255,255,255,0.03)] px-4 text-sm text-white outline-none"
+                  >
+                    <option>Flight</option>
+                    <option>Villa</option>
+                    <option>Exotic Rental</option>
+                    <option>Chauffeur</option>
+                    <option>Concierge</option>
+                  </select>
+
+                  <button
+                    type="submit"
+                    className="inline-flex items-center gap-2 rounded-xl bg-[#C6A55C] px-5 py-3 text-sm font-medium text-black hover:opacity-90"
+                  >
+                    Request Availability
+                    <ChevronRight className="h-4 w-4" />
+                  </button>
+                </div>
+              </form>
+
+              {requestSent && <div className="mt-4 text-sm text-zinc-400">{requestSent}</div>}
+            </div>
+
+            <div className="rounded-3xl border border-white/10 bg-[rgba(255,255,255,0.04)] p-5 backdrop-blur-xl">
+              <div className="text-xs font-semibold uppercase tracking-[0.14em] text-zinc-400">Handled Directly</div>
+              <div className="mt-3 space-y-3 text-sm text-zinc-300">
+                <InfoRow label="Private Flights" value="Empty legs and on-demand charter sourced on request." />
+                <InfoRow label="Luxury Travel" value="Villas, exotic rentals, chauffeur and concierge available." />
+                <InfoRow label="Fast Contact" value="WhatsApp, Telegram bot and direct call options." />
+                <InfoRow label="Selected Flights" value="Only live published opportunities are shown here." />
+              </div>
+            </div>
+          </section>
         </div>
       </div>
-      <div className="mt-4">{children}</div>
+
+      <div className="fixed bottom-5 right-5 z-50 flex flex-col gap-2">
+        {salesWhatsappNumber && (
+          <a
+            href={buildWhatsAppUrl(salesWhatsappNumber, "I want to request a private flight.")}
+            target="_blank"
+            rel="noreferrer"
+            className="inline-flex items-center gap-2 rounded-full bg-[#C6A55C] px-4 py-3 text-sm font-medium text-black shadow-lg"
+          >
+            <MessageCircle className="h-4 w-4" />
+            WhatsApp
+          </a>
+        )}
+        {telegramBotUrl && (
+          <a
+            href={telegramBotUrl}
+            target="_blank"
+            rel="noreferrer"
+            className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-black/70 px-4 py-3 text-sm text-white backdrop-blur-xl"
+          >
+            <Send className="h-4 w-4" />
+            Telegram
+          </a>
+        )}
+      </div>
     </div>
   );
 }
 
-function Detail({ label, value }: { label: string; value: string }) {
+function ToggleChip({ active, onClick, children }: { active: boolean; onClick: () => void; children: React.ReactNode }) {
   return (
-    <div className="rounded-2xl bg-black/30 px-3 py-3 text-sm text-zinc-200 shadow-inner">
+    <button
+      onClick={onClick}
+      className={[
+        "rounded-full px-3 py-1.5 text-xs transition-all",
+        active
+          ? "bg-[#C6A55C] text-black"
+          : "border border-white/10 bg-[rgba(255,255,255,0.04)] text-zinc-300 hover:bg-white/5",
+      ].join(" ")}
+    >
+      {children}
+    </button>
+  );
+}
+
+function UrgencyBadge({ depUtc }: { depUtc: string }) {
+  const urgency = getUrgency(depUtc);
+  if (urgency === "urgent") {
+    return (
+      <span className="rounded-full bg-red-500/10 px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-red-300">
+        Urgent
+      </span>
+    );
+  }
+  if (urgency === "soon") {
+    return (
+      <span className="rounded-full bg-amber-500/10 px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-amber-300">
+        Soon
+      </span>
+    );
+  }
+  return null;
+}
+
+function FeaturedDealCard({
+  deal,
+  salesWhatsappNumber,
+  salesPhoneNumber,
+  telegramBotUrl,
+}: {
+  deal: DealCardItem;
+  salesWhatsappNumber: string;
+  salesPhoneNumber: string;
+  telegramBotUrl: string;
+}) {
+  const waText = `I want to secure this flight: ${deal.routeLabel}${deal.minPriceUsd ? ` for $${Number(deal.minPriceUsd).toLocaleString()}` : ""}.`;
+  const imageUrl = deal.imageUrl || defaultImageForRoute(deal.routeLabel);
+
+  return (
+    <div className="group relative h-[300px] overflow-hidden rounded-[28px] border border-[#C6A55C]/20">
+      <img src={imageUrl} alt={deal.routeLabel} className="absolute inset-0 h-full w-full object-cover transition duration-500 group-hover:scale-105" />
+      <div className="absolute inset-0 bg-gradient-to-t from-black via-black/60 to-black/10" />
+
+      <div className="relative z-10 flex h-full flex-col justify-between p-5">
+        <div>
+          <div className="flex flex-wrap gap-2">
+            <UrgencyBadge depUtc={deal.depUtc} />
+            {recentlyUpdated(deal.updatedAt) && (
+              <span className="rounded-full bg-emerald-500/10 px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-emerald-300">
+                Updated
+              </span>
+            )}
+          </div>
+          <div className="mt-3 text-2xl font-semibold tracking-tight text-white">{deal.routeLabel}</div>
+          <div className="mt-1 text-sm text-zinc-300">{formatDealTime(deal.depUtc)}</div>
+          <div className="mt-1 text-xs text-zinc-300">{deal.packageHint || "Handled on request"}</div>
+        </div>
+
+        <div>
+          <div className="text-3xl font-semibold text-white">
+            {deal.minPriceUsd ? `$${Number(deal.minPriceUsd).toLocaleString()}` : "On request"}
+          </div>
+          <div className="mt-1 text-xs text-zinc-300">
+            {deal.seatsAvailable ?? "—"} seats • {deal.aircraftType || "Private Jet"}
+          </div>
+
+          <div className="mt-4 grid grid-cols-3 gap-2">
+            {salesWhatsappNumber && (
+              <a
+                href={buildWhatsAppUrl(salesWhatsappNumber, waText)}
+                target="_blank"
+                rel="noreferrer"
+                className="col-span-2 inline-flex items-center justify-center rounded-xl bg-[#C6A55C] px-4 py-2 text-sm font-medium text-black hover:opacity-90"
+              >
+                Secure via WhatsApp
+              </a>
+            )}
+            {telegramBotUrl ? (
+              <a
+                href={telegramBotUrl}
+                target="_blank"
+                rel="noreferrer"
+                className="inline-flex items-center justify-center rounded-xl border border-white/20 bg-black/25 px-3 py-2 text-white hover:bg-black/35"
+                aria-label="Open Telegram bot"
+              >
+                <Send className="h-4 w-4" />
+              </a>
+            ) : salesPhoneNumber ? (
+              <a
+                href={buildTelUrl(salesPhoneNumber)}
+                className="inline-flex items-center justify-center rounded-xl border border-white/20 bg-black/25 px-3 py-2 text-white hover:bg-black/35"
+                aria-label="Call now"
+              >
+                <PhoneCall className="h-4 w-4" />
+              </a>
+            ) : null}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function CompactDealCard({
+  deal,
+  salesWhatsappNumber,
+  salesPhoneNumber,
+  telegramBotUrl,
+}: {
+  deal: DealCardItem;
+  salesWhatsappNumber: string;
+  salesPhoneNumber: string;
+  telegramBotUrl: string;
+}) {
+  const waText = `I’m interested in this private flight: ${deal.routeLabel}.`;
+  return (
+    <div className="rounded-2xl border border-white/10 bg-[rgba(255,255,255,0.035)] p-4 backdrop-blur-md transition-all hover:border-[#C6A55C]/30">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <div className="text-base font-medium text-white">{deal.routeLabel}</div>
+          <div className="mt-1 text-xs text-zinc-400">{formatDealTime(deal.depUtc)}</div>
+        </div>
+        <div className="text-right">
+          <div className="text-lg font-semibold text-white">
+            {deal.minPriceUsd ? `$${Number(deal.minPriceUsd).toLocaleString()}` : "—"}
+          </div>
+        </div>
+      </div>
+
+      <div className="mt-3 flex items-center justify-between text-xs text-zinc-500">
+        <span>{deal.seatsAvailable ?? "—"} seats • {deal.aircraftType || "Jet"}</span>
+        <UrgencyBadge depUtc={deal.depUtc} />
+      </div>
+
+      <div className="mt-4 grid grid-cols-3 gap-2">
+        {salesWhatsappNumber && (
+          <a
+            href={buildWhatsAppUrl(salesWhatsappNumber, waText)}
+            target="_blank"
+            rel="noreferrer"
+            className="col-span-2 inline-flex items-center justify-center rounded-lg bg-[#C6A55C] px-3 py-1.5 text-xs font-medium text-black"
+          >
+            Book via WhatsApp
+          </a>
+        )}
+        {telegramBotUrl ? (
+          <a
+            href={telegramBotUrl}
+            target="_blank"
+            rel="noreferrer"
+            className="inline-flex items-center justify-center rounded-lg border border-white/10 px-2 py-1.5 text-xs text-white hover:bg-white/5"
+            aria-label="Open Telegram bot"
+          >
+            <Send className="h-3.5 w-3.5" />
+          </a>
+        ) : salesPhoneNumber ? (
+          <a
+            href={buildTelUrl(salesPhoneNumber)}
+            className="inline-flex items-center justify-center rounded-lg border border-white/10 px-2 py-1.5 text-xs text-white hover:bg-white/5"
+            aria-label="Call now"
+          >
+            <PhoneCall className="h-3.5 w-3.5" />
+          </a>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+function ServiceCard({ icon, title, text, href, label }: { icon: React.ReactNode; title: string; text: string; href?: string; label: string }) {
+  return (
+    <div className="rounded-3xl border border-white/10 bg-[rgba(255,255,255,0.04)] p-5 backdrop-blur-xl">
+      <div className="grid h-10 w-10 place-items-center rounded-2xl bg-black/30 text-[#C6A55C]">{icon}</div>
+      <div className="mt-4 text-lg font-medium text-white">{title}</div>
+      <div className="mt-2 text-sm text-zinc-400">{text}</div>
+      {href && (
+        <a href={href} target="_blank" rel="noreferrer" className="mt-4 inline-flex items-center gap-2 text-sm text-white hover:text-[#C6A55C]">
+          {label}
+          <ChevronRight className="h-4 w-4" />
+        </a>
+      )}
+    </div>
+  );
+}
+
+function Input({ value, onChange, placeholder, className = "" }: { value: string; onChange: (value: string) => void; placeholder: string; className?: string }) {
+  return (
+    <input
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      placeholder={placeholder}
+      className={`h-12 rounded-xl border border-white/10 bg-[rgba(255,255,255,0.03)] px-4 text-sm text-white outline-none ${className}`}
+    />
+  );
+}
+
+function InfoRow({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-2xl bg-black/30 px-4 py-3">
       <div className="text-[10px] uppercase tracking-wide text-zinc-500">{label}</div>
-      <div className="mt-1 break-words">{value}</div>
-    </div>
-  );
-}
-
-function EmptyState({ text }: { text: string }) {
-  return (
-    <div className="rounded-2xl bg-black/30 px-3 py-3 text-sm text-zinc-400 shadow-inner">
-      {text}
+      <div className="mt-1 text-sm text-zinc-200">{value}</div>
     </div>
   );
 }
