@@ -163,6 +163,11 @@ export function FormPreviewPanel() {
     projectInsights,
     projectCompanies,
     projectMetrics,
+
+    matchedEntities,
+    relationshipSignals,
+    contactMethods,
+    opportunitySignals,
   } = useAppState();
 
   const support = getSourceSupportLabel(selectedForm);
@@ -308,6 +313,62 @@ export function FormPreviewPanel() {
               subtitle: [m.facility_type, m.unit_value, m.unit_name]
                 .filter((x) => x !== null && x !== undefined && String(x).trim() !== "")
                 .join(" • "),
+            }))}
+          />
+        </div>
+
+        <div className="mt-6 grid grid-cols-1 gap-3">
+          <ListBlock
+            icon={<Building2 className="h-4 w-4" />}
+            title="Matched Entities"
+            empty="No matched entities surfaced yet."
+            items={(matchedEntities || []).slice(0, 8).map((entity) => ({
+              title: entity.name || "Unknown entity",
+              subtitle: [
+                entity.entityType,
+                entity.location,
+                entity.instagramHandle ? `@${entity.instagramHandle}` : null,
+              ]
+                .filter(Boolean)
+                .join(" • "),
+            }))}
+          />
+
+          <ListBlock
+            icon={<Network className="h-4 w-4" />}
+            title="Relationship Signals"
+            empty="No relationship signals identified yet."
+            items={(relationshipSignals || []).slice(0, 8).map((rel) => ({
+              title: rel.relationship,
+              subtitle: `Confidence ${Math.round(rel.confidenceScore * 100)}% • ${rel.evidence?.[0] || "No evidence note yet"}`,
+            }))}
+          />
+
+          <ListBlock
+            icon={<ShieldCheck className="h-4 w-4" />}
+            title="Discovered Contacts"
+            empty="No public contact paths identified yet."
+            items={(contactMethods || []).slice(0, 8).map((contact) => ({
+              title: contact.value,
+              subtitle: [
+                contact.type,
+                contact.isPublic ? "public" : "restricted",
+                `confidence ${Math.round(contact.confidenceScore * 100)}%`,
+              ].join(" • "),
+            }))}
+          />
+
+          <ListBlock
+            icon={<BarChart3 className="h-4 w-4" />}
+            title="Opportunity Signals"
+            empty="No opportunity signals detected yet."
+            items={(opportunitySignals || []).slice(0, 8).map((opportunity) => ({
+              title: opportunity.title,
+              subtitle: [
+                opportunity.category,
+                opportunity.status,
+                `confidence ${Math.round(opportunity.confidenceScore * 100)}%`,
+              ].join(" • "),
             }))}
           />
         </div>

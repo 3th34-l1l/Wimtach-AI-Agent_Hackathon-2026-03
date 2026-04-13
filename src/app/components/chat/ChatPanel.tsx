@@ -29,30 +29,20 @@ function uid() {
     : String(Date.now() + Math.random());
 }
 
-/**
- * JSON ACTION CONTRACT
- * Keep this compatible with existing AppState reducer for now.
- * We are changing the language and intent, not rebuilding the state model yet.
- */
 type JsonAction = {
   say?: string;
 
-  // workflow / navigation-ish
   setSelectedForm?: string;
 
-  // summaries
   appendNarrative?: string;
   setNarrative?: string;
   setWeatherSummary?: string;
 
-  // focus + fill
   focusField?: string;
   setFieldValue?: { id: string; value: string };
 
-  // confirmations
   confirm?: string;
 
-  // shifts / exports / summaries
   setShiftSchedule?: Array<{
     date?: string;
     start?: string;
@@ -61,11 +51,17 @@ type JsonAction = {
     team?: string;
   }>;
 
-  // existing status object reused temporarily for source / review actions
   status?: {
     set?: { key: string; status: "GOOD" | "BAD" }[];
     markAllGood?: boolean;
     reset?: boolean;
+  };
+
+  setIntelligenceContext?: {
+    matchedEntities?: any[];
+    relationshipSignals?: any[];
+    contactMethods?: any[];
+    opportunitySignals?: any[];
   };
 };
 
@@ -107,13 +103,59 @@ function safeParseJson(text: string): JsonAction | null {
 }
 
 /**
- * New GLIP-facing workflow labels with backward compatibility.
- * We keep the old internal route mapping alive for now.
+ * Transitional workflow labels with backward compatibility.
+ * User-facing behavior is aviation-oriented, internal routing still uses legacy page keys.
  */
 function detectSelectedForm(text: string) {
   const t = text.toLowerCase();
 
-  // New preferred labels
+  if (
+    t.includes("aircraft") ||
+    t.includes("tail number") ||
+    t.includes("registration") ||
+    t.includes("operator") ||
+    t.includes("airport") ||
+    t.includes("hangar") ||
+    t.includes("fbo") ||
+    t.includes("movement") ||
+    t.includes("flight activity") ||
+    t.includes("asset")
+  ) {
+    return "Incident Intake";
+  }
+
+  if (
+    t.includes("recurring arrivals") ||
+    t.includes("recurring departures") ||
+    t.includes("operator pattern") ||
+    t.includes("airport pattern") ||
+    t.includes("clustering") ||
+    t.includes("activity shift") ||
+    t.includes("movement trend")
+  ) {
+    return "Trend Review";
+  }
+
+  if (
+    t.includes("brief") ||
+    t.includes("operator summary") ||
+    t.includes("airport summary") ||
+    t.includes("asset summary") ||
+    t.includes("opportunity summary")
+  ) {
+    return "Report Summary";
+  }
+
+  if (
+    t.includes("source confidence") ||
+    t.includes("evidence") ||
+    t.includes("confidence level") ||
+    t.includes("why this matters") ||
+    t.includes("why this was flagged")
+  ) {
+    return "Source Check";
+  }
+
   if (
     t.includes("incident") ||
     t.includes("near miss") ||
@@ -155,7 +197,6 @@ function detectSelectedForm(text: string) {
     return "Source Check";
   }
 
-  // Temporary backward compatibility with old EMS demo words
   if (t.includes("occurrence")) return "Incident Intake";
   if (t.includes("teddy") || t.includes("bear")) return "Trend Review";
   if (t.includes("shift")) return "Report Summary";
@@ -177,10 +218,6 @@ function userWantsFormCompletion(text: string) {
   );
 }
 
-/**
- * Map new workflow label -> existing internal page key
- * so the current app structure keeps working.
- */
 function selectedFormToWorkflowPage(form?: string) {
   const f = (form || "").toLowerCase();
 
@@ -189,7 +226,6 @@ function selectedFormToWorkflowPage(form?: string) {
   if (f.includes("summary")) return "shift";
   if (f.includes("source")) return "status";
 
-  // backward compatibility
   if (f.includes("occurrence")) return "occurrence";
   if (f.includes("teddy")) return "teddy-bear";
   if (f.includes("shift")) return "shift";
@@ -198,11 +234,6 @@ function selectedFormToWorkflowPage(form?: string) {
   return "";
 }
 
-/**
- * Keep old field ids for now.
- * Later these should become real GLIP fields like:
- * report.date, report.location, report.incidentType, source.level, etc.
- */
 function firstFieldForWorkflow(page: string) {
   if (page === "occurrence") return "occurrence.date";
   if (page === "teddy-bear") return "teddy.datetime";
@@ -213,26 +244,78 @@ function firstFieldForWorkflow(page: string) {
 
 function workflowSummary(page: string) {
   if (page === "occurrence") {
-    return "Incident Intake selected. I’ll capture the report step by step. First: when did the incident or near-miss occur?";
+    return "Asset review selected. I’ll capture the aircraft, airport, operator, or activity step by step. First: what do you want to review?";
   }
   if (page === "teddy-bear") {
-    return "Trend Review selected. Tell me which recurring hazard, repeating issue, or baseline change you want to review.";
+    return "Signal review selected. Tell me which recurring movement pattern, operator behavior, or airport activity shift you want to analyze.";
   }
   if (page === "shift") {
-    return "Report Summary selected. I can help generate a plain-language summary of incidents, trends, or flagged risks.";
+    return "Brief summary selected. I can help generate a plain-language summary of aircraft activity, operator context, and opportunity signals.";
   }
   if (page === "status") {
-    return "Source Check selected. I can explain why an issue was flagged and what level of source authority supports it.";
+    return "Source check selected. I can explain why a signal was flagged and what level of evidence or support applies.";
   }
-  return "Describe a safety report, hazard, near-miss, trend, or source question you want to review.";
+  return "Describe an aircraft, airport, operator, movement signal, opportunity, or source question you want to review.";
 }
 
 function sourceLadderExplainer() {
-  return "Source Ladder: Level 1 is law and regulator guidance, Level 2 is consensus standards, Level 3 is industry frameworks, Level 4 is manufacturer instructions, and Level 5 is trade or training content. Higher levels generally carry stronger authority and enforceability.";
+  return "Source Ladder: Level 1 is direct and authoritative data, Level 2 is strong verified records, Level 3 is structured industry context, Level 4 is operator or manufacturer material, and Level 5 is interpretive or training content. Higher levels generally carry stronger confidence and decision weight.";
+}
+
+function wantsLegacyProjectContext(text: string) {
+  const t = text.toLowerCase();
+  return (
+    t.includes("project") ||
+    t.includes("projects") ||
+    t.includes("portfolio") ||
+    t.includes("stage breakdown") ||
+    t.includes("company on this project") ||
+    t.includes("construction project") ||
+    t.includes("project stage") ||
+    t.includes("project metrics")
+  );
+}
+
+function wantsAviationIntelligence(text: string) {
+  const t = text.toLowerCase();
+  return (
+    t.includes("aircraft") ||
+    t.includes("airport") ||
+    t.includes("operator") ||
+    t.includes("hangar") ||
+    t.includes("charter") ||
+    t.includes("maintenance") ||
+    t.includes("detailing") ||
+    t.includes("tail number") ||
+    t.includes("registration") ||
+    t.includes("fbo") ||
+    t.includes("private jet") ||
+    t.includes("pilot") ||
+    t.includes("mechanic") ||
+    t.includes("empty leg") ||
+    t.includes("flight activity")
+  );
+}
+
+function wantsRelationshipOrContactHelp(text: string) {
+  const t = text.toLowerCase();
+  return (
+    t.includes("contact") ||
+    t.includes("email") ||
+    t.includes("phone") ||
+    t.includes("instagram") ||
+    t.includes("public profile") ||
+    t.includes("outreach") ||
+    t.includes("lead") ||
+    t.includes("relationship") ||
+    t.includes("who runs") ||
+    t.includes("who operates")
+  );
 }
 
 /**
- * NEW: Project context / DB-first detection helpers
+ * Transitional context / DB-first detection helpers.
+ * Still uses project-style backend naming, but now supports aviation queries too.
  */
 function looksLikeProjectQuery(text: string) {
   const t = text.toLowerCase();
@@ -251,7 +334,22 @@ function looksLikeProjectQuery(text: string) {
     t.includes("planning") ||
     t.includes("refurbishment") ||
     t.includes("redevelopment") ||
-    t.includes("expansion")
+    t.includes("expansion") ||
+    t.includes("aircraft") ||
+    t.includes("airport") ||
+    t.includes("operator") ||
+    t.includes("hangar") ||
+    t.includes("charter") ||
+    t.includes("detailing") ||
+    t.includes("maintenance") ||
+    t.includes("tail number") ||
+    t.includes("registration") ||
+    t.includes("fbo") ||
+    t.includes("empty leg") ||
+    t.includes("flight activity") ||
+    t.includes("private jet") ||
+    t.includes("pilot") ||
+    t.includes("mechanic")
   );
 }
 
@@ -268,7 +366,7 @@ async function fetchProjectContext(query: string) {
 
 function buildProjectAssistantReply(data: any) {
   if (!data?.found || !data?.projectContext) {
-    return data?.message || "No matching project context found.";
+    return data?.message || "No matching structured context found.";
   }
 
   const project = data.projectContext.project || {};
@@ -276,7 +374,7 @@ function buildProjectAssistantReply(data: any) {
   const matches = Array.isArray(data.matches) ? data.matches : [];
   const alternates = matches
     .slice(1, 3)
-    .map((m: any) => m.project_name)
+    .map((m: any) => m.project_name || m.name)
     .filter(Boolean);
 
   const companyCount = Array.isArray(data.projectContext.companies)
@@ -289,23 +387,29 @@ function buildProjectAssistantReply(data: any) {
 
   const confidence = data?.confidence ? String(data.confidence).toLowerCase() : null;
 
+  const label =
+    project.project_name ||
+    project.name ||
+    inferred?.label ||
+    "Unknown context";
+
   return [
-    `Best match found: ${project.project_name || "Unknown project"}.`,
+    `Best match found: ${label}.`,
     confidence ? `Match confidence is ${confidence}.` : null,
     inferred?.summary || null,
     project.project_stage
       ? `Current stage: ${String(project.project_stage).toLowerCase()}.`
       : null,
     project.construction_type
-      ? `Construction type: ${String(project.construction_type).toLowerCase()}.`
+      ? `Context type: ${String(project.construction_type).toLowerCase()}.`
       : null,
     inferred?.sectorRoot ? `Sector: ${inferred.sectorRoot}.` : null,
-    companyCount ? `Linked companies: ${companyCount}.` : null,
-    metricCount ? `Top project metrics found: ${metricCount}.` : null,
+    companyCount ? `Linked entities: ${companyCount}.` : null,
+    metricCount ? `Top structured signals found: ${metricCount}.` : null,
     alternates.length
       ? `Other possible matches: ${alternates.join(" | ")}.`
       : null,
-    `These are decision-support signals based on structured project data, not proof of a safety problem.`,
+    `These are decision-support signals based on matched structured context, not proof of a commercial or operational conclusion.`,
   ]
     .filter(Boolean)
     .join(" ");
@@ -319,7 +423,7 @@ export function ChatPanel() {
     {
       id: "1",
       role: "ai",
-      text: "Hi! Describe a safety report, near-miss, hazard, trend, source question, or project context you want to review.",
+      text: "Hi! Ask about an aircraft, airport, operator, movement signal, source question, or aviation context you want to review.",
     },
   ]);
 
@@ -333,9 +437,11 @@ export function ChatPanel() {
     shiftSchedule,
     dispatchAction,
 
-    // project context state
     setProjectContext,
     clearProjectContext,
+
+    setIntelligenceContext,
+    clearIntelligenceContext,
   } = useAppState();
 
   const [provider, setProvider] = useState<Provider>("auto");
@@ -451,17 +557,46 @@ export function ChatPanel() {
       lower.includes("summary:") ||
       lower.includes("trend summary") ||
       lower.includes("report summary")
-    )
+    ) {
       return "scribe";
+    }
     if (
       lower.includes("urgent") ||
       lower.includes("warning") ||
       lower.includes("hazard") ||
       lower.includes("critical") ||
       lower.includes("escalate")
-    )
+    ) {
       return "urgent";
+    }
     return "assistant";
+  }
+
+  function applyIntelligenceContextToState(payload: {
+    matchedEntities?: any[];
+    relationshipSignals?: any[];
+    contactMethods?: any[];
+    opportunitySignals?: any[];
+  }) {
+    setIntelligenceContext({
+      matchedEntities: Array.isArray(payload?.matchedEntities)
+        ? payload.matchedEntities
+        : [],
+      relationshipSignals: Array.isArray(payload?.relationshipSignals)
+        ? payload.relationshipSignals
+        : [],
+      contactMethods: Array.isArray(payload?.contactMethods)
+        ? payload.contactMethods
+        : [],
+      opportunitySignals: Array.isArray(payload?.opportunitySignals)
+        ? payload.opportunitySignals
+        : [],
+    });
+  }
+
+  function clearAllIntelligenceState() {
+    clearProjectContext();
+    clearIntelligenceContext();
   }
 
   function applyJsonAction(a: JsonAction) {
@@ -529,48 +664,82 @@ export function ChatPanel() {
         dispatchAction({ type: "PATCH_STATUS", patch });
       }
     }
+
+    if (a.setIntelligenceContext) {
+      applyIntelligenceContextToState(a.setIntelligenceContext);
+    }
   }
 
   async function sendToLLM(nextMsgs: Msg[]) {
     const firstField = firstFieldForWorkflow(workflowPage);
 
     const system = `
-You are GLIP Safety Tracker, an AI assistant for construction safety review and analysis.
+You are Aether Intelligence, an AI assistant for aviation operations intelligence, relationship intelligence, and opportunity discovery.
 
 CURRENT PAGE: ${workflowPage}
 PATHNAME: ${pathname}
 SELECTED WORKFLOW: ${selectedForm ?? "—"}
 
 PRODUCT INTENT:
-- This product is a decision-support layer for construction safety teams.
-- It helps interpret reports, detect patterns, explain findings in plain language, and show what level of authority supports each finding.
-- It is descriptive and review-oriented, not only transactional.
+- This product is a decision-support layer for aviation operations, market intelligence, and commercial opportunity discovery.
+- It helps interpret aircraft activity, operator behavior, airport patterns, public business signals, and relationship clues in plain language.
+- It supports internal review, lead qualification, and marketing intelligence by organizing signals into usable context.
+- It is descriptive, evidence-aware, and commercially useful, not just transactional.
+
+INTELLIGENCE LAYERS:
+- Asset Intelligence = aircraft, registrations, movement, recurring activity, likely operational patterns
+- Operator Intelligence = operators, companies, FBOs, service providers, maintenance groups, charter context
+- Relationship Intelligence = public-facing associations between people, companies, accounts, airports, aircraft, and services
+- Contact Intelligence = public business contact paths such as websites, business emails, public phone numbers, contact forms, and public social accounts
+- Opportunity Intelligence = commercially relevant signals for outreach, qualification, partnership, or service offerings
+- Source Confidence = how strong, direct, and reliable the supporting evidence is
 
 SOURCE LADDER:
-- Level 1 = Law & Regulator (highest authority)
-- Level 2 = Consensus Standards
-- Level 3 = Industry Frameworks
-- Level 4 = Manufacturer Instructions
-- Level 5 = Trade & Training Content (interpretive only)
+- Level 1 = Direct / Authoritative Data
+- Level 2 = Verified Records
+- Level 3 = Structured Industry Context
+- Level 4 = Operator / Manufacturer / Business Material
+- Level 5 = Interpretive Content
 
 HOW TO USE THE SOURCE LADDER:
-- Use it to explain source authority, enforceability, and support level.
-- Do NOT claim the ladder proves absolute accuracy.
-- Higher levels generally carry stronger authority.
-- Lower levels may still be useful but are more interpretive.
+- Use it to explain source confidence, evidence strength, and decision weight.
+- Do NOT claim the ladder proves absolute truth.
+- Higher levels generally carry stronger confidence and stronger operational value.
+- Lower levels may still be useful, but they should be framed as more interpretive.
+- Always separate observed facts from inferred conclusions.
+
+COMMERCIAL INTELLIGENCE OPERATING MODE:
+- This assistant may help surface commercially relevant public signals.
+- It may help identify who appears relevant, where activity is concentrated, what services may be relevant, and what public outreach paths exist.
+- It should think like an internal intelligence asset for market awareness and lead qualification.
+- It should support client acquisition strategy by helping organize public signals into actionable insight.
+- It must stay grounded in public or structured signals and clearly distinguish:
+  - observed facts
+  - likely matches
+  - inferred opportunities
+  - low-confidence assumptions
+
+CONTACT / RELATIONSHIP GUIDANCE:
+- Focus on public professional or business-facing information.
+- Public contact paths may include websites, business emails, public phone numbers, booking/request forms, directories, and public social/business accounts.
+- If confidence is weak, say so.
+- Do not present guesses as verified identity matches.
+- When linking entities, explain why they may be associated.
 
 ABSOLUTE RULES:
 - If you return JSON, you MUST include a helpful "say" message.
 - Be concise, specific, and operational.
-- Prefer construction safety language: incident, near-miss, observation, hazard, trend, source, authority, review, project context, site conditions.
+- Prefer aviation intelligence language: aircraft, airport, operator, FBO, hangar, movement signal, route pattern, source, evidence, context, flight conditions, relationship signal, contact path, opportunity signal.
 - If the user is completing a workflow, focus one field and ask ONE short question.
 - Do NOT reply with generic text like "Updated". Be specific.
+- Do NOT overstate certainty.
+- Clearly separate evidence from inference.
 
 WORKFLOW INTENT:
-- Incident Intake = capture report details clearly
-- Trend Review = summarize recurring hazards, baseline changes, and repeating issues
-- Report Summary = generate plain-language review or export summaries
-- Source Check = explain why an issue was flagged and what level of source support applies
+- Incident Intake = capture aircraft, airport, operator, or signal details clearly
+- Trend Review = summarize recurring movement patterns, operator behavior, airport activity shifts, and clustering signals
+- Report Summary = generate plain-language briefs, internal summaries, export summaries, or market-facing intelligence summaries
+- Source Check = explain why a signal was flagged and what level of evidence or support applies
 
 JSON schema you may return (ONLY JSON when updating UI):
 {
@@ -578,7 +747,7 @@ JSON schema you may return (ONLY JSON when updating UI):
   "setSelectedForm": "Incident Intake | Trend Review | Report Summary | Source Check",
   "appendNarrative": "text to add",
   "setNarrative": "replace narrative",
-  "setWeatherSummary": "replace site conditions summary",
+  "setWeatherSummary": "replace flight or local operating conditions summary",
   "focusField": "occurrence.date | teddy.datetime | ...",
   "setFieldValue": { "id": "occurrence.callNumber", "value": "..." },
   "confirm": "short confirmation to log",
@@ -590,7 +759,24 @@ DESCRIPTIVE STAKEHOLDER BEHAVIOR:
 - When useful, explain what the system is doing in stakeholder-friendly language.
 - If discussing source support, mention the ladder level and what it means.
 - If the user asks what the source ladder is, explain it clearly in plain English.
-- If the user asks about trends, summarize what is repeating and why it matters.
+- If the user asks about patterns, summarize what is repeating and why it matters.
+- If the user asks about opportunity, explain why a lead or account may be commercially relevant.
+- If the user asks about relationship signals, explain both the observed signals and the confidence level.
+- If the user asks about contacts, frame results as public business-facing paths, not guaranteed personal identity matches.
+
+OUTPUT STYLE:
+- Prefer short structured explanations.
+- When useful, organize output into:
+  - What was found
+  - Why it matters
+  - Confidence
+  - Suggested next question
+- For market or outreach questions, prefer language like:
+  - likely relevant
+  - public-facing
+  - worth review
+  - commercially interesting
+  - low / medium / high confidence
 
 STATE SNAPSHOT:
 - narrative: ${narrative ?? "—"}
@@ -598,7 +784,7 @@ STATE SNAPSHOT:
 - shiftSchedule rows: ${Array.isArray(shiftSchedule) ? shiftSchedule.length : 0}
 
 FIRST FIELD FOR CURRENT WORKFLOW:
-${firstField || "(none) - ask what kind of safety review the user wants"}
+${firstField || "(none) - ask what kind of aviation review the user wants"}
 `.trim();
 
     const llmMessages = [
@@ -684,7 +870,6 @@ ${firstField || "(none) - ask what kind of safety review the user wants"}
     const next = [...msgs, userMsg];
     setMsgs(next);
 
-    // quick explainer shortcut
     if (text.toLowerCase().includes("source ladder")) {
       const explain = sourceLadderExplainer();
       setMsgs((p) => [...p, { id: uid(), role: "ai", text: explain }]);
@@ -693,8 +878,7 @@ ${firstField || "(none) - ask what kind of safety review the user wants"}
       return;
     }
 
-    // NEW: project / context lookup shortcut
-if (looksLikeProjectQuery(text)) {
+ if (wantsLegacyProjectContext(text)) {
   try {
     const result = await fetchProjectContext(text);
     const data = result?.data || {};
@@ -705,32 +889,39 @@ if (looksLikeProjectQuery(text)) {
       const reply = buildProjectAssistantReply(data);
       setMsgs((p) => [...p, { id: uid(), role: "ai", text: reply }]);
       await playTTS(reply, pickTTSMode(reply));
-      setBusy(false);
       return;
     }
 
     if (data?.message) {
-      clearProjectContext();
-      setMsgs((p) => [...p, { id: uid(), role: "ai", text: data.message }]);
-      await playTTS(data.message, "assistant");
-      setBusy(false);
+      clearAllIntelligenceState();
+
+      const normalizedMessage = String(data.message)
+        .replaceAll("Project-specific context", "Structured context")
+        .replaceAll("project-specific context", "structured context")
+        .replaceAll(
+          "general construction safety context",
+          "general aviation intelligence context"
+        )
+        .replaceAll("construction safety", "aviation intelligence");
+
+      setMsgs((p) => [...p, { id: uid(), role: "ai", text: normalizedMessage }]);
+      await playTTS(normalizedMessage, "assistant");
       return;
     }
 
-    clearProjectContext();
-    const fallbackText =
-      "I could not retrieve structured project context for that query yet. Try a city, sector, or stage phrase such as Toronto, hospital, infrastructure, planning, or execution.";
-    setMsgs((p) => [...p, { id: uid(), role: "ai", text: fallbackText }]);
-    await playTTS(fallbackText, "assistant");
+    clearAllIntelligenceState();
   } catch (e: any) {
-    clearProjectContext();
-    const errText = `⚠️ Project context error: ${e?.message || "Lookup failed."}`;
+    clearAllIntelligenceState();
+    const errText = `⚠️ Context lookup error: ${e?.message || "Lookup failed."}`;
     setMsgs((p) => [...p, { id: uid(), role: "ai", text: errText }]);
-  } finally {
-    setBusy(false);
+    return;
   }
-  return;
 }
+
+if (wantsAviationIntelligence(text) || wantsRelationshipOrContactHelp(text)) {
+  clearProjectContext();
+}
+
 
     const maybeForm = detectSelectedForm(text);
     if (maybeForm) {
@@ -822,10 +1013,7 @@ if (looksLikeProjectQuery(text)) {
       const mimeType =
         mimeCandidates.find((m) => MediaRecorder.isTypeSupported(m)) || "";
 
-      const mr = new MediaRecorder(
-        stream,
-        mimeType ? { mimeType } : undefined
-      );
+      const mr = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
       mediaRef.current = mr;
 
       const chunks: BlobPart[] = [];
@@ -902,12 +1090,26 @@ if (looksLikeProjectQuery(text)) {
           }
 
           if (looksLikeProjectQuery(transcript)) {
-            const data = await fetchProjectContext(transcript);
-            applyProjectContextToState(data);
+            const result = await fetchProjectContext(transcript);
+            const data = result?.data || {};
 
-            const reply = buildProjectAssistantReply(data);
-            setMsgs((p) => [...p, { id: uid(), role: "ai", text: reply }]);
-            await playTTS(reply, pickTTSMode(reply));
+            if (data?.found && data?.projectContext) {
+              applyProjectContextToState(data);
+
+              const reply = buildProjectAssistantReply(data);
+              setMsgs((p) => [...p, { id: uid(), role: "ai", text: reply }]);
+              await playTTS(reply, pickTTSMode(reply));
+              return;
+            }
+
+            clearAllIntelligenceState();
+
+            const fallbackText =
+              data?.message ||
+              "I could not retrieve structured context for that voice query yet. Try an airport, operator, city, or service type.";
+
+            setMsgs((p) => [...p, { id: uid(), role: "ai", text: fallbackText }]);
+            await playTTS(fallbackText, "assistant");
             return;
           }
 
@@ -999,13 +1201,13 @@ if (looksLikeProjectQuery(text)) {
           lon
         )}`
       );
-      if (!r.ok) throw new Error("Site conditions fetch failed");
+      if (!r.ok) throw new Error("Flight conditions fetch failed");
 
       const data = await r.json().catch(() => ({}));
       const c = data?.current;
       const m = data?.mapped;
 
-      const rawLine = `${m?.icon ?? ""} ${m?.label ?? "Site conditions"} • ${
+      const rawLine = `${m?.icon ?? ""} ${m?.label ?? "Flight conditions"} • ${
         c?.temperature_2m ?? "?"
       }°C • wind ${c?.wind_speed_10m ?? "?"} km/h • precip ${
         c?.precipitation ?? "?"
@@ -1016,24 +1218,24 @@ if (looksLikeProjectQuery(text)) {
 
       const updatedNarrative =
         narrative === "—"
-          ? `Site conditions at time of report: ${rawLine}`
-          : `${narrative}\nSite conditions at time of report: ${rawLine}`;
+          ? `Flight conditions at time of review: ${rawLine}`
+          : `${narrative}\nFlight conditions at time of review: ${rawLine}`;
 
       setNarrative(updatedNarrative);
       dispatchAction({ type: "SET_NARRATIVE", text: updatedNarrative });
 
       setMsgs((p) => [
         ...p,
-        { id: uid(), role: "ai", text: `Site conditions update: ${rawLine}` },
+        { id: uid(), role: "ai", text: `Flight conditions update: ${rawLine}` },
       ]);
-      await playTTS(`Site conditions update. ${rawLine}`, "assistant");
+      await playTTS(`Flight conditions update. ${rawLine}`, "assistant");
     } catch (e: any) {
       setMsgs((p) => [
         ...p,
         {
           id: uid(),
           role: "ai",
-          text: `⚠️ Site conditions error: ${e?.message || "Unable to access location."}`,
+          text: `⚠️ Flight conditions error: ${e?.message || "Unable to access location."}`,
         },
       ]);
     } finally {
@@ -1045,15 +1247,15 @@ if (looksLikeProjectQuery(text)) {
     <Card className="flex h-[70dvh] flex-col">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <div className="text-sm font-medium">Safety Analyst</div>
+          <div className="text-sm font-medium">Intelligence Analyst</div>
           <div className="text-xs text-zinc-400">
-            GLIP assistant • construction safety review • source-aware reasoning • Page: {activePage}
+            Aether assistant • aviation intelligence review • source-aware reasoning • Page: {activePage}
             {activePage === "chat" && selectedForm ? ` • Workflow: ${workflowPage}` : ""}
           </div>
 
           <div className="mt-2 flex items-center gap-2 text-[11px] text-zinc-500">
             <ShieldCheck className="h-3.5 w-3.5" />
-            Uses project context, plain-language explanations, and source ladder support levels.
+            Uses aviation context, plain-language explanations, and source ladder confidence levels.
           </div>
         </div>
 
@@ -1092,10 +1294,10 @@ if (looksLikeProjectQuery(text)) {
             size="sm"
             onClick={onGetWeather}
             disabled={busy}
-            title="Get site conditions from your location"
+            title="Get flight conditions from your location"
           >
             <CloudSun className="h-4 w-4" />
-            <span className="ml-2 hidden sm:inline">Site Conditions</span>
+            <span className="ml-2 hidden sm:inline">Flight Conditions</span>
           </Button>
         </div>
       </div>
@@ -1104,7 +1306,7 @@ if (looksLikeProjectQuery(text)) {
         <div className="flex items-center justify-between">
           <div className="text-zinc-300/70">Heard</div>
           <div className="text-[10px] text-zinc-500">
-            Try: “Explain the source ladder” or “Ontario hospital projects”
+            Try: “Explain the source ladder” or “Toronto private jet operators”
           </div>
         </div>
 
@@ -1165,7 +1367,7 @@ if (looksLikeProjectQuery(text)) {
           onKeyDown={(e) => {
             if (e.key === "Enter") onSend();
           }}
-          placeholder="Ask about a project, hazard, near-miss, trend, or source question…"
+          placeholder="Ask about an aircraft, airport, operator, movement signal, or source question…"
           className="h-11 flex-1 rounded-2xl bg-white/5 px-4 text-sm text-zinc-100 placeholder:text-zinc-500 shadow-[0_0_0_1px_rgba(255,255,255,.08)] outline-none focus:shadow-[0_0_0_1px_rgba(56,189,248,.35)]"
         />
 

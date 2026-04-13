@@ -338,19 +338,19 @@ function inferDynamicSignals(
 
   if (systemDensity === "High") {
     riskSignals.push(
-      "A dense operating-metrics profile suggests this project has many measurable systems, assets, or operational dimensions."
+      "A dense operating-metrics profile suggests this context has many measurable systems, assets, or operational dimensions."
     );
   }
 
   if (reviewSensitivity === "High") {
     riskSignals.push(
-      "Because the project is in an active delivery phase, safety review sensitivity is elevated."
+      "Because the matched context is in an active delivery phase, review sensitivity is elevated."
     );
   }
 
   if (valueBand === "Mega-project scale" || valueBand === "Large-project scale") {
     riskSignals.push(
-      "Project scale appears large enough that escalation paths, stakeholder alignment, and reporting clarity matter more."
+      "Scale appears large enough that escalation paths, stakeholder alignment, and reporting clarity matter more."
     );
   }
 
@@ -367,12 +367,12 @@ function inferDynamicSignals(
     .join(" • ");
 
   const insights = [
-    `${environment} project environment.`,
+    `${environment} operating environment.`,
     `${complexity}.`,
-    `Coordination burden appears ${coordinationBurden.toLowerCase()} based on linked-company count.`,
-    `System density appears ${systemDensity.toLowerCase()} based on the volume of operating metrics.`,
-    `Program fragmentation appears ${fragmentation.toLowerCase()} based on subproject count.`,
-    `Review sensitivity is ${reviewSensitivity.toLowerCase()} based on project stage.`,
+    `Coordination burden appears ${coordinationBurden.toLowerCase()} based on linked-entity count.`,
+    `System density appears ${systemDensity.toLowerCase()} based on the volume of structured metrics.`,
+    `Program fragmentation appears ${fragmentation.toLowerCase()} based on sub-record count.`,
+    `Review sensitivity is ${reviewSensitivity.toLowerCase()} based on stage.`,
     `Scale profile: ${valueBand.toLowerCase()}.`,
     ...riskSignals,
   ];
@@ -433,7 +433,7 @@ function scoreProject(row: ProjectRow, intent: ParsedIntent) {
 
   if (intent.constructionType && haystack.includes(intent.constructionType)) {
     score += 28;
-    reasons.push(`Matched construction type signal: ${row.construction_type}`);
+    reasons.push(`Matched context-type signal: ${row.construction_type}`);
   }
 
   if (intent.environmentHint) {
@@ -530,24 +530,24 @@ function buildContextSummary(
     project.project_name ? `${project.project_name} is the strongest current match.` : null,
     inferred?.summary || null,
     companyCount
-      ? `${companyCount} linked compan${companyCount === 1 ? "y" : "ies"} indicate ${String(
+      ? `${companyCount} linked entit${companyCount === 1 ? "y" : "ies"} indicate ${String(
           inferred?.coordinationBurden || "meaningful"
         ).toLowerCase()} coordination complexity.`
       : null,
     metricCount
-      ? `${metricCount} operating metric${metricCount === 1 ? "" : "s"} add additional system-level context.`
+      ? `${metricCount} structured metric${metricCount === 1 ? "" : "s"} add additional system-level context.`
       : null,
     subprojectCount
-      ? `${subprojectCount} subproject${subprojectCount === 1 ? "" : "s"} suggest program layering beneath the parent project.`
+      ? `${subprojectCount} sub-record${subprojectCount === 1 ? "" : "s"} suggest additional layering beneath the parent record.`
       : null,
     inferred?.reviewSensitivity
       ? `Review sensitivity is inferred as ${String(inferred.reviewSensitivity).toLowerCase()}.`
       : null,
     intent.valueHint
-      ? `Because the prompt emphasized value or scale, higher-value projects were weighted more strongly during ranking.`
+      ? `Because the prompt emphasized value or scale, higher-value records were weighted more strongly during ranking.`
       : null,
     intent.analyticsIntent
-      ? `The response is optimized for portfolio-style interpretation, not just exact keyword matching.`
+      ? `The response is optimized for broad context interpretation, not just exact keyword matching.`
       : null,
   ];
 
@@ -566,7 +566,6 @@ export async function GET(req: NextRequest) {
 
     const intent = parseIntent(rawQ);
 
-    // Broad retrieval first: this is what makes the experience feel smarter.
     const candidateRes = await db.query(
       `
       select
@@ -594,7 +593,7 @@ export async function GET(req: NextRequest) {
         query: rawQ,
         interpretedQuery: intent,
         confidence: "weak",
-        message: "No project records are currently available in the dataset.",
+        message: "No structured context records are currently available in the dataset.",
         matches: [],
       });
     }
@@ -618,7 +617,7 @@ export async function GET(req: NextRequest) {
         query: rawQ,
         interpretedQuery: intent,
         confidence: "weak",
-        message: `No matching projects found for "${rawQ}".`,
+        message: `No matching structured context found for "${rawQ}".`,
         matches: [],
       });
     }
@@ -698,7 +697,7 @@ export async function GET(req: NextRequest) {
           intent.valueHint && `value-focus=true`,
         ]
           .filter(Boolean)
-          .join(", ") || "broad portfolio inference"
+          .join(", ") || "broad context inference"
       }`,
     ];
 
@@ -754,7 +753,7 @@ export async function GET(req: NextRequest) {
         fallback: true,
         query: rawQ,
         message:
-          "Project-specific context is temporarily unavailable. Using general construction safety context instead.",
+          "Structured context is temporarily unavailable. Using general aviation intelligence context instead.",
         error: String(error?.message || error),
         matches: [],
         projectContext: null,

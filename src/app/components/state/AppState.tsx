@@ -1,7 +1,11 @@
 "use client";
 
 import React, { createContext, useContext, useMemo, useState } from "react";
-
+import type {
+  EntityRecord,
+  RelationshipRecord,
+} from "@/lib/intelligence/types";
+import type { ContactMethod } from "@/lib/intelligence/types";
 type ProjectCompany = {
   company_id: string | number;
   company_name: string;
@@ -34,8 +38,37 @@ type ProjectContextState = {
   projectMetrics: ProjectMetric[];
 };
 
+
+type OpportunitySignal = {
+  id: string;
+  title: string;
+  category:
+    | "detailing"
+    | "charter"
+    | "maintenance"
+    | "fbo"
+    | "operator_outreach"
+    | "other";
+  confidenceScore: number;
+  status: "open" | "watch" | "qualified" | "archived";
+  notes?: string;
+};
+
+type IntelligenceContextState = {
+  matchedEntities: EntityRecord[];
+  relationshipSignals: RelationshipRecord[];
+  contactMethods: ContactMethod[];
+  opportunitySignals: OpportunitySignal[];
+};
+
 type StatusValue = "GOOD" | "BAD";
-export type ShiftRow = { date?: string; start?: string; end?: string; unit?: string; team?: string };
+export type ShiftRow = {
+  date?: string;
+  start?: string;
+  end?: string;
+  unit?: string;
+  team?: string;
+};
 
 export type FormKey = "occurrence" | "teddy";
 export type FormData = {
@@ -116,6 +149,13 @@ export type AppStateValue = {
   setProjectContext: (payload: Partial<ProjectContextState>) => void;
   clearProjectContext: () => void;
 
+  matchedEntities: EntityRecord[];
+  relationshipSignals: RelationshipRecord[];
+  contactMethods: ContactMethod[];
+  opportunitySignals: OpportunitySignal[];
+  setIntelligenceContext: (payload: Partial<IntelligenceContextState>) => void;
+  clearIntelligenceContext: () => void;
+
   dispatchAction: (a: Action) => void;
 };
 
@@ -146,6 +186,13 @@ const EMPTY_PROJECT_CONTEXT: ProjectContextState = {
   projectMetrics: [],
 };
 
+const EMPTY_INTELLIGENCE_CONTEXT: IntelligenceContextState = {
+  matchedEntities: [],
+  relationshipSignals: [],
+  contactMethods: [],
+  opportunitySignals: [],
+};
+
 export function AppStateProvider({ children }: { children: React.ReactNode }) {
   const [activePage, setActivePage] = useState("/chat");
 
@@ -174,6 +221,9 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
   const [projectContext, setProjectContextState] = useState<ProjectContextState>(
     EMPTY_PROJECT_CONTEXT
   );
+
+  const [intelligenceContext, setIntelligenceContextState] =
+    useState<IntelligenceContextState>(EMPTY_INTELLIGENCE_CONTEXT);
 
   function patchStatus(patch: Record<string, StatusValue>) {
     setStatusMap((prev) => ({ ...prev, ...patch }));
@@ -208,6 +258,17 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
 
   function clearProjectContext() {
     setProjectContextState(EMPTY_PROJECT_CONTEXT);
+  }
+
+  function setIntelligenceContext(payload: Partial<IntelligenceContextState>) {
+    setIntelligenceContextState((prev) => ({
+      ...prev,
+      ...payload,
+    }));
+  }
+
+  function clearIntelligenceContext() {
+    setIntelligenceContextState(EMPTY_INTELLIGENCE_CONTEXT);
   }
 
   function dispatchAction(a: Action) {
@@ -314,6 +375,15 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
       setProjectContext,
       clearProjectContext,
 
+      
+
+      matchedEntities: intelligenceContext.matchedEntities,
+      relationshipSignals: intelligenceContext.relationshipSignals,
+      contactMethods: intelligenceContext.contactMethods,
+      opportunitySignals: intelligenceContext.opportunitySignals,
+      setIntelligenceContext,
+      clearIntelligenceContext,
+
       dispatchAction,
     }),
     [
@@ -328,6 +398,7 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
       task,
       mentionedEmails,
       projectContext,
+      intelligenceContext,
     ]
   );
 

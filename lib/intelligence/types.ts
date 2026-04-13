@@ -20,18 +20,48 @@ export type SourceType =
   | "manual_entry"
   | "inferred";
 
+export type ContactMethodType =
+  | "email"
+  | "phone"
+  | "website"
+  | "instagram"
+  | "contact_form";
+
+export type ContactMethod = {
+  type: ContactMethodType;
+  value: string;
+  isPublic: boolean;
+  confidenceScore: number;
+  label?: string;
+  notes?: string;
+};
+
+export type SourceReference = {
+  type: SourceType;
+  label?: string;
+  url?: string;
+  confidenceScore?: number;
+  notes?: string;
+};
+
 export type EntityRecord = {
   id: string;
   name: string;
   entityType: EntityType;
   location?: string;
+
   website?: string;
   publicEmail?: string;
   publicPhone?: string;
   instagramHandle?: string;
+
   sourceType: SourceType;
   confidenceScore: number;
   notes?: string;
+
+  tags?: string[];
+  contactMethods?: ContactMethod[];
+  sourceReferences?: SourceReference[];
 };
 
 export type RelationshipType =
@@ -49,4 +79,5 @@ export type RelationshipRecord = {
   relationship: RelationshipType;
   confidenceScore: number;
   evidence: string[];
+  notes?: string;
 };
