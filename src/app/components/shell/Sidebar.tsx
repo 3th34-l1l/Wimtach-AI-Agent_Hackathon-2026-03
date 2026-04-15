@@ -14,6 +14,10 @@ import {
   BriefcaseBusiness,
   ShieldCheck,
   FileBarChart2,
+  Globe,
+  Columns3,
+  CreditCard,
+  Link2,
 } from "lucide-react";
 
 /*
@@ -63,7 +67,12 @@ const nav: NavItem[] = [
   // Existing working routes, relabeled for aviation use
   { href: "/forms/occurrence", label: "Assets", icon: Plane },
   { href: "/forms/teddy-bear", label: "Airports", icon: MapPinned },
+   { href: "/forms/intelmap", label: "Map", icon: Globe },
 
+{ href: "/forms/decision-queue", label: "Decision Queue", icon: BriefcaseBusiness },
+{ href: "/forms/opportunity-pipeline", label: "Opportunity Pipeline", icon: Columns3 },
+{ href: "/forms/rewards-hub", label: "Rewards Hub", icon: CreditCard },
+{ href: "/forms/charter-referral-network", label: "Referral Network", icon: Link2 },
   // Future sections intentionally shown but not wired yet
   {
     label: "Operators",
