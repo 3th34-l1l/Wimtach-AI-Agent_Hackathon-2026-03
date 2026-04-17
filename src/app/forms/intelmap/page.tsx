@@ -1,7 +1,8 @@
 "use client";
 
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import mapboxgl, { type GeoJSONSource, type MapLayerMouseEvent } from "mapbox-gl";
+import "mapbox-gl/dist/mapbox-gl.css";
 import type { Feature, FeatureCollection, Point } from "geojson";
 
 import airportsRaw from "../../../data/aviation/Airports.json";
@@ -36,6 +37,23 @@ type AirlineRecord = {
   active: boolean | null;
 };
 
+
+type AircraftMetadataRecord = {
+  modes: string;
+  registration?: string | null;
+  manufacturerName?: string | null;
+  model?: string | null;
+  operator?: string | null;
+  owner?: string | null;
+  categoryDescription?: string | null;
+  icaoAircraftClass?: string | null;
+  engines?: string | null;
+  built?: string | null;
+  firstFlightDate?: string | null;
+  status?: string | null;
+  typecode?: string | null;
+};
+
 type LicenceRecord = {
   licenceId: number;
   airCarrierName: string;
@@ -46,6 +64,19 @@ type LicenceRecord = {
   licenceStatusDescE?: string | null;
   nationalityNameE?: string | null;
 };
+
+type FeedMode = "live" | "delayed" | "pattern";
+type FeedSource = "opensky" | "adsblol" | "cache" | "stale-cache" | "pattern" | "unknown";
+
+type PatternAircraftResponse = {
+  ok: boolean;
+  stale?: boolean;
+  mode?: "pattern";
+  source?: string;
+  error?: string | null;
+  states?: OpenSkyState[] | null;
+};
+const PATTERN_FETCH_TIMEOUT_MS = 6000;
 
 type CharterRecord = {
   caseNumber: string;
@@ -93,9 +124,14 @@ type OpenSkyState = [
   number | null,
 ];
 
+
 type OpenSkyResponse = {
   time?: number;
   states?: OpenSkyState[] | null;
+  source?: string;
+  stale?: boolean;
+  retryAfter?: number | null;
+  error?: string | null;
 };
 
 type AircraftProps = {
@@ -119,8 +155,23 @@ type SelectedAircraft = AircraftProps & {
   nearestAirportName: string | null;
   nearestAirportIata: string | null;
   distanceNm: number | null;
-};
 
+  registration?: string | null;
+  manufacturerName?: string | null;
+  model?: string | null;
+  operator?: string | null;
+  owner?: string | null;
+  categoryDescription?: string | null;
+  icaoAircraftClass?: string | null;
+  engines?: string | null;
+  built?: string | null;
+  firstFlightDate?: string | null;
+  status?: string | null;
+  typecode?: string | null;
+  weightClass?: "light" | "medium" | "heavy" | "unknown";
+  movementClass?: "ground" | "arrival" | "departure" | "cruise" | "unknown";
+  efficiencyFlags?: string[];
+};
 type LlmResponse = {
   ok: boolean;
   text?: string;
@@ -128,6 +179,23 @@ type LlmResponse = {
 };
 
 type AiPanelState = "open" | "collapsed" | "hidden";
+
+type NormalizedBounds = {
+  lamin: number;
+  lomin: number;
+  lamax: number;
+  lomax: number;
+};
+
+type CachedAircraftEntry = {
+  ts: number;
+  response: OpenSkyResponse;
+};
+
+const AIRCRAFT_CACHE_TTL_MS = 30_000;
+const AIRCRAFT_REFRESH_VISIBLE_MS = 45_000;
+const MOVE_DEBOUNCE_MS = 900;
+const MIN_BOUNDS_DELTA = 0.08;
 
 function normalizeName(value: string | null | undefined): string {
   return (value ?? "")
@@ -427,10 +495,186 @@ function buildAiContext(
   return "Current context: no specific airport or aircraft selected.";
 }
 
+function normalizeBounds(bounds: mapboxgl.LngLatBounds): NormalizedBounds {
+  return {
+    lamin: Number(bounds.getSouth().toFixed(1)),
+    lomin: Number(bounds.getWest().toFixed(1)),
+    lamax: Number(bounds.getNorth().toFixed(1)),
+    lomax: Number(bounds.getEast().toFixed(1)),
+  };
+}
+
+function boundsKey(bounds: NormalizedBounds): string {
+  return `${bounds.lamin}:${bounds.lomin}:${bounds.lamax}:${bounds.lomax}`;
+}
+
+function boundsChangedMeaningfully(
+  prev: NormalizedBounds | null,
+  next: NormalizedBounds
+): boolean {
+  if (!prev) return true;
+
+  return (
+    Math.abs(prev.lamin - next.lamin) >= MIN_BOUNDS_DELTA ||
+    Math.abs(prev.lomin - next.lomin) >= MIN_BOUNDS_DELTA ||
+    Math.abs(prev.lamax - next.lamax) >= MIN_BOUNDS_DELTA ||
+    Math.abs(prev.lomax - next.lomax) >= MIN_BOUNDS_DELTA
+  );
+}
+
+function buildAircraftFilterExpression(charterOnly: boolean): mapboxgl.Expression {
+  return [
+    "all",
+    ["!", ["has", "point_count"]],
+    charterOnly
+      ? ["!=", ["get", "charterStatus"], "unknown"]
+      : ["literal", true],
+  ] as unknown as mapboxgl.Expression;
+
+}
+
+async function fetchJsonWithTimeout<T>(input: string, init?: RequestInit, timeoutMs = 6000): Promise<T> {
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const response = await fetch(input, {
+      ...init,
+      signal: controller.signal,
+    });
+
+    const payload = (await response.json()) as T;
+
+    if (!response.ok) {
+      throw new Error(
+        typeof payload === "object" && payload && "error" in payload
+          ? String((payload as { error?: string }).error ?? `HTTP ${response.status}`)
+          : `HTTP ${response.status}`
+      );
+    }
+
+    return payload;
+  } finally {
+    window.clearTimeout(timeout);
+  }
+}
+
+function deriveWeightClass(
+  meta?: AircraftMetadataRecord | null
+): "light" | "medium" | "heavy" | "unknown" {
+  if (!meta) return "unknown";
+
+  const category = (meta.categoryDescription ?? "").toLowerCase();
+  const cls = (meta.icaoAircraftClass ?? "").toLowerCase();
+  const model = (meta.model ?? "").toLowerCase();
+
+  if (
+    category.includes("heavy") ||
+    cls.includes("heavy") ||
+    model.includes("777") ||
+    model.includes("747") ||
+    model.includes("767") ||
+    model.includes("787") ||
+    model.includes("a330") ||
+    model.includes("a340") ||
+    model.includes("a350") ||
+    model.includes("a380")
+  ) {
+    return "heavy";
+  }
+
+  if (
+    category.includes("large") ||
+    cls.includes("large") ||
+    model.includes("737") ||
+    model.includes("a319") ||
+    model.includes("a320") ||
+    model.includes("a321") ||
+    model.includes("embraer") ||
+    model.includes("crj") ||
+    model.includes("gulfstream") ||
+    model.includes("challenger") ||
+    model.includes("falcon")
+  ) {
+    return "medium";
+  }
+
+  if (
+    category.includes("small") ||
+    cls.includes("small") ||
+    model.includes("c172") ||
+    model.includes("c182") ||
+    model.includes("pa-") ||
+    model.includes("sr22") ||
+    model.includes("citation")
+  ) {
+    return "light";
+  }
+
+  return "unknown";
+}
+
+function classifyMovement(selected: AircraftProps): "ground" | "arrival" | "departure" | "cruise" | "unknown" {
+  if (selected.onGround) return "ground";
+
+  const altitude = selected.baroAltitudeFt ?? selected.geoAltitudeFt ?? null;
+  const vertical = selected.verticalRateFpm ?? 0;
+
+  if (altitude == null) return "unknown";
+  if (altitude < 12000 && vertical > 500) return "departure";
+  if (altitude < 12000 && vertical < -500) return "arrival";
+  if (altitude >= 12000) return "cruise";
+
+  return "unknown";
+}
+
+function buildEfficiencyFlags(
+  selected: AircraftProps,
+  movementClass: "ground" | "arrival" | "departure" | "cruise" | "unknown",
+  weightClass: "light" | "medium" | "heavy" | "unknown"
+): string[] {
+  const flags: string[] = [];
+
+  if (movementClass === "departure" && (selected.verticalRateFpm ?? 0) < 800) {
+    flags.push("Shallow climb");
+  }
+
+  if (movementClass === "arrival" && (selected.velocityKt ?? 0) > 280) {
+    flags.push("Fast arrival profile");
+  }
+
+  if (movementClass === "cruise" && (selected.velocityKt ?? 0) < 180) {
+    flags.push("Low cruise efficiency");
+  }
+
+  if (weightClass === "heavy") {
+    flags.push("Higher CO₂ sensitivity");
+  }
+
+  if (selected.onGround) {
+    flags.push("Ground state");
+  }
+
+  if (flags.length === 0) {
+    flags.push("No major movement flags");
+  }
+
+  return flags;
+}
+
 export default function MapPage() {
   const mapContainer = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<mapboxgl.Map | null>(null);
   const refreshTimerRef = useRef<number | null>(null);
+  const moveDebounceRef = useRef<number | null>(null);
+  const mountedRef = useRef(false);
+  const aircraftAbortRef = useRef<AbortController | null>(null);
+  const lastRequestedBoundsRef = useRef<NormalizedBounds | null>(null);
+  const aircraftCacheRef = useRef<Map<string, CachedAircraftEntry>>(new Map());
+  const inFlightByKeyRef = useRef<Map<string, Promise<OpenSkyResponse>>>(new Map());
+  const [feedSource, setFeedSource] = useState<FeedSource>("unknown");
+  const lastAircraftGeoJsonRef = useRef<FeatureCollection<Point, AircraftProps> | null>(null);
+  const [feedMode, setFeedMode] = useState<FeedMode>("live");
 
   const [selectedAirport, setSelectedAirport] = useState<SelectedAirport | null>(null);
   const [selectedAircraft, setSelectedAircraft] = useState<SelectedAircraft | null>(null);
@@ -439,6 +683,7 @@ export default function MapPage() {
   const [aircraftCount, setAircraftCount] = useState(0);
   const [isLoadingAircraft, setIsLoadingAircraft] = useState(false);
   const [aircraftError, setAircraftError] = useState<string | null>(null);
+  const [aircraftStale, setAircraftStale] = useState(false);
   const [showAirports, setShowAirports] = useState(true);
   const [showAircraft, setShowAircraft] = useState(true);
   const [charterOnly, setCharterOnly] = useState(false);
@@ -457,7 +702,22 @@ export default function MapPage() {
   const charters = useMemo(() => charterRaw as CharterRecord[], []);
 
   const airportGeoJson = useMemo(() => buildAirportGeoJson(airports), [airports]);
+  const aircraftMetadata = useMemo(
+  () => aircraftMetadataRaw as AircraftMetadataRecord[],
+  []
+);
 
+const aircraftMetadataByModes = useMemo(() => {
+  const map = new Map<string, AircraftMetadataRecord>();
+
+  for (const row of aircraftMetadata) {
+    const key = (row.modes ?? "").trim().toLowerCase();
+    if (!key) continue;
+    map.set(key, row);
+  }
+
+  return map;
+}, [aircraftMetadata]);
   const charterCarrierCounts = useMemo(() => {
     const counts = new Map<string, number>();
     for (const row of charters) {
@@ -523,9 +783,276 @@ export default function MapPage() {
     return selectedAircraft ? getActionForAircraft(selectedAircraft) : null;
   }, [selectedAircraft]);
 
+ const applyAircraftDataToMap = useCallback(
+  (
+    response: OpenSkyResponse | PatternAircraftResponse,
+    mode: FeedMode = "live"
+  ) => {
+    const currentMap = mapRef.current;
+    if (!currentMap) return;
+
+    const states = response.states ?? [];
+    const geojson = buildAircraftGeoJson(
+      states,
+      charterCarrierCounts,
+      licenceCarrierCounts
+    );
+
+    const source = currentMap.getSource("aircraft") as GeoJSONSource | undefined;
+    if (source) {
+      source.setData(geojson);
+    }
+
+    lastAircraftGeoJsonRef.current = geojson;
+    setAircraftCount(geojson.features.length);
+    setAircraftStale(mode !== "live" || Boolean(response.stale));
+    setFeedMode(mode);
+
+    if (mode === "pattern") {
+      setFeedSource("pattern");
+    } else {
+      const sourceName = (response.source ?? "unknown").toLowerCase();
+      if (sourceName === "opensky") setFeedSource("opensky");
+      else if (sourceName === "adsblol") setFeedSource("adsblol");
+      else if (sourceName === "cache") setFeedSource("cache");
+      else if (sourceName === "stale-cache") setFeedSource("stale-cache");
+      else setFeedSource("unknown");
+    }
+  },
+  [charterCarrierCounts, licenceCarrierCounts]
+);
+
+  const fetchPatternAircraftResponse = useCallback(
+  async (normalized: NormalizedBounds): Promise<PatternAircraftResponse> => {
+    const url = new URL("/api/aircraft/pattern", window.location.origin);
+    url.searchParams.set("lamin", String(normalized.lamin));
+    url.searchParams.set("lomin", String(normalized.lomin));
+    url.searchParams.set("lamax", String(normalized.lamax));
+    url.searchParams.set("lomax", String(normalized.lomax));
+
+    return await fetchJsonWithTimeout<PatternAircraftResponse>(
+      url.toString(),
+      {
+        method: "GET",
+        headers: {
+          Accept: "application/json",
+        },
+        cache: "no-store",
+      },
+      PATTERN_FETCH_TIMEOUT_MS
+    );
+  },
+  []
+);
+
+  const fetchAircraftResponse = useCallback(
+    async (normalized: NormalizedBounds, force = false): Promise<OpenSkyResponse> => {
+      const key = boundsKey(normalized);
+      const now = Date.now();
+      const cached = aircraftCacheRef.current.get(key);
+
+      if (!force && cached && now - cached.ts <= AIRCRAFT_CACHE_TTL_MS) {
+        return cached.response;
+      }
+
+      const existingPromise = inFlightByKeyRef.current.get(key);
+      if (!force && existingPromise) {
+        return existingPromise;
+      }
+
+      const controller = new AbortController();
+      aircraftAbortRef.current?.abort();
+      aircraftAbortRef.current = controller;
+
+      const url = new URL("/api/opensky/states", window.location.origin);
+      url.searchParams.set("lamin", String(normalized.lamin));
+      url.searchParams.set("lomin", String(normalized.lomin));
+      url.searchParams.set("lamax", String(normalized.lamax));
+      url.searchParams.set("lomax", String(normalized.lomax));
+
+      const promise = (async () => {
+        const response = await fetch(url.toString(), {
+          method: "GET",
+          cache: "no-store",
+          signal: controller.signal,
+          headers: {
+            Accept: "application/json",
+          },
+        });
+
+        let payload: OpenSkyResponse | null = null;
+        try {
+          payload = (await response.json()) as OpenSkyResponse;
+        } catch {
+          payload = null;
+        }
+
+        if (!response.ok) {
+          const fallback = aircraftCacheRef.current.get(key);
+          if (fallback) {
+            return {
+              ...fallback.response,
+              stale: true,
+              error: payload?.error ?? `HTTP ${response.status}`,
+            };
+          }
+
+          throw new Error(payload?.error || `Aircraft fetch failed (${response.status})`);
+        }
+
+        const normalizedPayload: OpenSkyResponse = {
+          time: payload?.time,
+          states: Array.isArray(payload?.states) ? payload?.states : [],
+          stale: Boolean(payload?.stale),
+          retryAfter:
+            typeof payload?.retryAfter === "number" ? payload.retryAfter : null,
+          error: payload?.error ?? null,
+        };
+
+        aircraftCacheRef.current.set(key, {
+          ts: Date.now(),
+          response: normalizedPayload,
+        });
+
+        if (aircraftCacheRef.current.size > 24) {
+          const oldestKey = aircraftCacheRef.current.keys().next().value;
+          if (oldestKey) aircraftCacheRef.current.delete(oldestKey);
+        }
+
+        return normalizedPayload;
+      })();
+
+      inFlightByKeyRef.current.set(key, promise);
+
+      try {
+        return await promise;
+      } finally {
+        if (inFlightByKeyRef.current.get(key) === promise) {
+          inFlightByKeyRef.current.delete(key);
+        }
+      }
+    },
+    []
+  );
+
+  const updateAircraftSource = useCallback(
+  async (options?: { force?: boolean; reason?: "load" | "move" | "interval" | "visible" }) => {
+    const currentMap = mapRef.current;
+    if (!currentMap || !mountedRef.current) return;
+
+    if (typeof document !== "undefined" && document.visibilityState !== "visible") {
+      return;
+    }
+
+    const bounds = currentMap.getBounds();
+    if (!bounds) return;
+
+    const normalized = normalizeBounds(bounds);
+    const shouldFetch =
+      options?.force === true ||
+      boundsChangedMeaningfully(lastRequestedBoundsRef.current, normalized);
+
+    if (!shouldFetch && options?.reason !== "interval") {
+      return;
+    }
+
+    lastRequestedBoundsRef.current = normalized;
+    setIsLoadingAircraft(true);
+    setAircraftError(null);
+
+    try {
+      const response = await fetchAircraftResponse(normalized, Boolean(options?.force));
+      if (!mountedRef.current) return;
+
+      const mode: FeedMode = response.stale ? "delayed" : "live";
+      applyAircraftDataToMap(response, mode);
+
+      if (response.error) {
+        setAircraftError(response.error);
+      } else {
+        setAircraftError(null);
+      }
+
+      return;
+    } catch (error) {
+      if (error instanceof DOMException && error.name === "AbortError") {
+        return;
+      }
+
+      if (!mountedRef.current) return;
+
+      const liveError =
+        error instanceof Error ? error.message : "Aircraft fetch failed";
+
+      // Mode B fallback: keep last rendered aircraft layer if we have one
+      if (lastAircraftGeoJsonRef.current) {
+        const source = currentMap.getSource("aircraft") as GeoJSONSource | undefined;
+        if (source) {
+          source.setData(lastAircraftGeoJsonRef.current);
+        }
+        setAircraftCount(lastAircraftGeoJsonRef.current.features.length);
+        setAircraftStale(true);
+        setFeedMode("delayed");
+        setAircraftError(`${liveError} · showing last known traffic`);
+        setIsLoadingAircraft(false);
+        return;
+      }
+
+      // Mode C fallback: historical / uploaded pattern data
+      try {
+        const pattern = await fetchPatternAircraftResponse(normalized);
+        if (!mountedRef.current) return;
+
+        if (pattern.ok && Array.isArray(pattern.states) && pattern.states.length > 0) {
+          applyAircraftDataToMap(pattern, "pattern");
+          setAircraftError(
+            liveError ? `${liveError} · showing fallback traffic pattern` : "Showing fallback traffic pattern"
+          );
+          setIsLoadingAircraft(false);
+          return;
+        }
+      } catch {
+        // ignore and fall through
+      }
+
+      setFeedMode("delayed");
+      setAircraftError(liveError);
+    } finally {
+      if (mountedRef.current) {
+        setIsLoadingAircraft(false);
+      }
+    }
+  },
+  [applyAircraftDataToMap, fetchAircraftResponse, fetchPatternAircraftResponse]
+);
+
+  const scheduleAircraftRefresh = useCallback(
+    (reason: "load" | "move" | "interval" | "visible", delayMs = MOVE_DEBOUNCE_MS) => {
+      if (moveDebounceRef.current != null) {
+        window.clearTimeout(moveDebounceRef.current);
+      }
+
+      moveDebounceRef.current = window.setTimeout(() => {
+        void updateAircraftSource({
+          force: reason === "interval" || reason === "visible",
+          reason,
+        });
+      }, delayMs);
+    },
+    [updateAircraftSource]
+  );
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+
   useEffect(() => {
     if (!mapContainer.current) return;
     if (!mapboxgl.accessToken) return;
+    if (mapRef.current) return;
 
     const map = new mapboxgl.Map({
       container: mapContainer.current,
@@ -538,49 +1065,139 @@ export default function MapPage() {
     mapRef.current = map;
     map.addControl(new mapboxgl.NavigationControl(), "bottom-right");
 
-    const updateAircraftSource = async () => {
-      const currentMap = mapRef.current;
-      if (!currentMap) return;
+    const handleAirportClusterClick = (e: mapboxgl.MapMouseEvent) => {
+      const features = map.queryRenderedFeatures(e.point, {
+        layers: ["airport-clusters"],
+      });
 
-      const bounds = currentMap.getBounds();
-      if (!bounds) return;
+      const clusterId = features[0]?.properties?.cluster_id;
+      const source = map.getSource("airports") as GeoJSONSource | undefined;
+      if (!source || clusterId == null) return;
 
-      const url = new URL("/api/opensky/states", window.location.origin);
-      url.searchParams.set("lamin", String(bounds.getSouth()));
-      url.searchParams.set("lomin", String(bounds.getWest()));
-      url.searchParams.set("lamax", String(bounds.getNorth()));
-      url.searchParams.set("lomax", String(bounds.getEast()));
+      source.getClusterExpansionZoom(clusterId, (err, zoom) => {
+        if (err) return;
+        const geometry = features[0].geometry;
+        if (geometry.type !== "Point") return;
 
-      setIsLoadingAircraft(true);
-      setAircraftError(null);
+        map.easeTo({
+          center: geometry.coordinates as [number, number],
+          zoom: resolveZoom(zoom, {
+            fallback: map.getZoom() + 1,
+            max: 12,
+          }),
+          duration: 700,
+        });
+      });
+    };
 
-      try {
-        const response = await fetch(url.toString(), { cache: "no-store" });
-        if (!response.ok) {
-          const text = await response.text();
-          throw new Error(text || `HTTP ${response.status}`);
+    const handleAircraftClusterClick = (e: mapboxgl.MapMouseEvent) => {
+      const features = map.queryRenderedFeatures(e.point, {
+        layers: ["aircraft-clusters"],
+      });
+
+      const clusterId = features[0]?.properties?.cluster_id;
+      const source = map.getSource("aircraft") as GeoJSONSource | undefined;
+      if (!source || clusterId == null) return;
+
+      source.getClusterExpansionZoom(clusterId, (err, zoom) => {
+        if (err) return;
+        const geometry = features[0].geometry;
+        if (geometry.type !== "Point") return;
+
+        map.easeTo({
+          center: geometry.coordinates as [number, number],
+          zoom: resolveZoom(zoom, {
+            fallback: map.getZoom() + 1,
+            max: 11,
+          }),
+          duration: 700,
+        });
+      });
+    };
+
+      const handleAirportPointClick = (e: MapLayerMouseEvent) => {
+        const feature = e.features?.[0] as AirportFeature | undefined;
+        if (!feature?.properties) return;
+
+        setSelectedAircraft(null);
+        setSelectedAirport({
+          ...feature.properties,
+          charterTopCarriers: topCharterCarriers.slice(0, 6),
+          licenceTopCarriers: topLicenceCarriers.slice(0, 6),
+        });
+
+        if (feature.geometry.type === "Point") {
+          map.easeTo({
+            center: feature.geometry.coordinates as [number, number],
+            zoom: Math.max(map.getZoom(), 6.5),
+            duration: 700,
+          });
         }
+      };
 
-        const data = (await response.json()) as OpenSkyResponse;
-        const states = data.states ?? [];
-        const geojson = buildAircraftGeoJson(
-          states,
-          charterCarrierCounts,
-          licenceCarrierCounts
-        );
+      const handleAircraftPointClick = (e: MapLayerMouseEvent) => {
+    const feature = e.features?.[0] as AircraftFeature | undefined;
+    if (!feature?.properties) return;
 
-        const source = currentMap.getSource("aircraft") as GeoJSONSource | undefined;
-        if (source) {
-          source.setData(geojson);
-        }
+    setSelectedAirport(null);
 
-        setAircraftCount(geojson.features.length);
-      } catch (error) {
-        setAircraftError(
-          error instanceof Error ? error.message : "Aircraft fetch failed"
-        );
-      } finally {
-        setIsLoadingAircraft(false);
+    const nearest = findNearestAirport(
+      feature.geometry.coordinates as [number, number],
+      airportGeoJson.features
+    );
+
+    const meta =
+      aircraftMetadataByModes.get(
+        (feature.properties.icao24 ?? "").trim().toLowerCase()
+      ) ?? null;
+
+    const weightClass = deriveWeightClass(meta);
+    const movementClass = classifyMovement(feature.properties);
+    const efficiencyFlags = buildEfficiencyFlags(
+      feature.properties,
+      movementClass,
+      weightClass
+    );
+
+    setSelectedAircraft({
+      ...feature.properties,
+      nearestAirportName: nearest.name,
+      nearestAirportIata: nearest.iata,
+      distanceNm: nearest.distanceNm,
+
+      registration: meta?.registration ?? null,
+      manufacturerName: meta?.manufacturerName ?? null,
+      model: meta?.model ?? null,
+      operator: meta?.operator ?? null,
+      owner: meta?.owner ?? null,
+      categoryDescription: meta?.categoryDescription ?? null,
+      icaoAircraftClass: meta?.icaoAircraftClass ?? null,
+      engines: meta?.engines ?? null,
+      built: meta?.built ?? null,
+      firstFlightDate: meta?.firstFlightDate ?? null,
+      status: meta?.status ?? null,
+      typecode: meta?.typecode ?? null,
+      weightClass,
+      movementClass,
+      efficiencyFlags,
+    });
+  };
+
+    const cursorPointer = () => {
+      map.getCanvas().style.cursor = "pointer";
+    };
+
+    const cursorReset = () => {
+      map.getCanvas().style.cursor = "";
+    };
+
+    const handleMoveEnd = () => {
+      scheduleAircraftRefresh("move", MOVE_DEBOUNCE_MS);
+    };
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "visible") {
+        scheduleAircraftRefresh("visible", 400);
       }
     };
 
@@ -713,13 +1330,7 @@ export default function MapPage() {
         id: "aircraft-points-glow",
         type: "circle",
         source: "aircraft",
-        filter: [
-          "all",
-          ["!", ["has", "point_count"]],
-          charterOnly
-            ? ["!=", ["get", "charterStatus"], "unknown"]
-            : ["literal", true],
-        ],
+        filter: buildAircraftFilterExpression(charterOnly),
         paint: {
           "circle-color": [
             "match",
@@ -748,13 +1359,7 @@ export default function MapPage() {
         id: "aircraft-points",
         type: "circle",
         source: "aircraft",
-        filter: [
-          "all",
-          ["!", ["has", "point_count"]],
-          charterOnly
-            ? ["!=", ["get", "charterStatus"], "unknown"]
-            : ["literal", true],
-        ],
+        filter: buildAircraftFilterExpression(charterOnly),
         paint: {
           "circle-color": [
             "match",
@@ -779,94 +1384,10 @@ export default function MapPage() {
         },
       });
 
-      map.on("click", "airport-clusters", (e) => {
-        const features = map.queryRenderedFeatures(e.point, {
-          layers: ["airport-clusters"],
-        });
-
-        const clusterId = features[0]?.properties?.cluster_id;
-        const source = map.getSource("airports") as GeoJSONSource | undefined;
-        if (!source || clusterId == null) return;
-
-        source.getClusterExpansionZoom(clusterId, (err, zoom) => {
-          if (err) return;
-          const geometry = features[0].geometry;
-          if (geometry.type !== "Point") return;
-
-          map.easeTo({
-            center: geometry.coordinates as [number, number],
-            zoom: resolveZoom(zoom, {
-              fallback: map.getZoom() + 1,
-              max: 12,
-            }),
-            duration: 700,
-          });
-        });
-      });
-
-      map.on("click", "aircraft-clusters", (e) => {
-        const features = map.queryRenderedFeatures(e.point, {
-          layers: ["aircraft-clusters"],
-        });
-
-        const clusterId = features[0]?.properties?.cluster_id;
-        const source = map.getSource("aircraft") as GeoJSONSource | undefined;
-        if (!source || clusterId == null) return;
-
-        source.getClusterExpansionZoom(clusterId, (err, zoom) => {
-          if (err) return;
-          const geometry = features[0].geometry;
-          if (geometry.type !== "Point") return;
-
-          map.easeTo({
-            center: geometry.coordinates as [number, number],
-            zoom: resolveZoom(zoom, {
-              fallback: map.getZoom() + 1,
-              max: 11,
-            }),
-            duration: 700,
-          });
-        });
-      });
-
-      map.on("click", "airport-points", (e: MapLayerMouseEvent) => {
-        const feature = e.features?.[0] as AirportFeature | undefined;
-        if (!feature?.properties) return;
-
-        setSelectedAircraft(null);
-        setSelectedAirport({
-          ...feature.properties,
-          charterTopCarriers: topCharterCarriers.slice(0, 6),
-          licenceTopCarriers: topLicenceCarriers.slice(0, 6),
-        });
-
-        if (feature.geometry.type === "Point") {
-          map.easeTo({
-            center: feature.geometry.coordinates as [number, number],
-            zoom: Math.max(map.getZoom(), 6.5),
-            duration: 700,
-          });
-        }
-      });
-
-      map.on("click", "aircraft-points", (e: MapLayerMouseEvent) => {
-        const feature = e.features?.[0] as AircraftFeature | undefined;
-        if (!feature?.properties) return;
-
-        setSelectedAirport(null);
-
-        const nearest = findNearestAirport(
-          feature.geometry.coordinates as [number, number],
-          airportGeoJson.features
-        );
-
-        setSelectedAircraft({
-          ...feature.properties,
-          nearestAirportName: nearest.name,
-          nearestAirportIata: nearest.iata,
-          distanceNm: nearest.distanceNm,
-        });
-      });
+      map.on("click", "airport-clusters", handleAirportClusterClick);
+      map.on("click", "aircraft-clusters", handleAircraftClusterClick);
+      map.on("click", "airport-points", handleAirportPointClick);
+      map.on("click", "aircraft-points", handleAircraftPointClick);
 
       for (const layer of [
         "airport-clusters",
@@ -874,39 +1395,68 @@ export default function MapPage() {
         "aircraft-clusters",
         "aircraft-points",
       ]) {
-        map.on("mouseenter", layer, () => {
-          map.getCanvas().style.cursor = "pointer";
-        });
-        map.on("mouseleave", layer, () => {
-          map.getCanvas().style.cursor = "";
-        });
+        map.on("mouseenter", layer, cursorPointer);
+        map.on("mouseleave", layer, cursorReset);
       }
 
-      void updateAircraftSource();
+      map.on("moveend", handleMoveEnd);
+      document.addEventListener("visibilitychange", handleVisibilityChange);
 
-      map.on("moveend", () => {
-        void updateAircraftSource();
-      });
+      void updateAircraftSource({ force: true, reason: "load" });
 
       refreshTimerRef.current = window.setInterval(() => {
-        void updateAircraftSource();
-      }, 30000);
+        if (document.visibilityState !== "visible") return;
+        void updateAircraftSource({ force: true, reason: "interval" });
+      }, AIRCRAFT_REFRESH_VISIBLE_MS);
     });
 
     return () => {
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+
+      if (moveDebounceRef.current != null) {
+        window.clearTimeout(moveDebounceRef.current);
+        moveDebounceRef.current = null;
+      }
+
       if (refreshTimerRef.current != null) {
         window.clearInterval(refreshTimerRef.current);
+        refreshTimerRef.current = null;
       }
+
+      aircraftAbortRef.current?.abort();
+      aircraftAbortRef.current = null;
+      inFlightByKeyRef.current.clear();
+
+      try {
+        map.off("moveend", handleMoveEnd);
+        map.off("click", "airport-clusters", handleAirportClusterClick);
+        map.off("click", "aircraft-clusters", handleAircraftClusterClick);
+        map.off("click", "airport-points", handleAirportPointClick);
+        map.off("click", "aircraft-points", handleAircraftPointClick);
+
+        for (const layer of [
+          "airport-clusters",
+          "airport-points",
+          "aircraft-clusters",
+          "aircraft-points",
+        ]) {
+          map.off("mouseenter", layer, cursorPointer);
+          map.off("mouseleave", layer, cursorReset);
+        }
+      } catch {
+        // no-op
+      }
+
       map.remove();
       mapRef.current = null;
     };
   }, [
     airportGeoJson,
-    charterCarrierCounts,
-    licenceCarrierCounts,
+    charterOnly,
     topCharterCarriers,
     topLicenceCarriers,
-    charterOnly,
+    scheduleAircraftRefresh,
+    updateAircraftSource,
   ]);
 
   useEffect(() => {
@@ -938,6 +1488,79 @@ export default function MapPage() {
       }
     }
   }, [showAirports, showAircraft]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+
+    const filter = buildAircraftFilterExpression(charterOnly);
+
+    if (map.getLayer("aircraft-points-glow")) {
+      map.setFilter("aircraft-points-glow", filter);
+    }
+    if (map.getLayer("aircraft-points")) {
+      map.setFilter("aircraft-points", filter);
+    }
+  }, [charterOnly]);
+
+  useEffect(() => {
+  const map = mapRef.current;
+  if (!map) return;
+
+  const useBlue = feedSource === "adsblol";
+
+  if (map.getLayer("aircraft-points-glow")) {
+    map.setPaintProperty("aircraft-points-glow", "circle-color", useBlue
+      ? [
+          "match",
+          ["get", "serviceTier"],
+          "high",
+          "#60a5fa",
+          "medium",
+          "#3b82f6",
+          "#64748b",
+        ]
+      : [
+          "match",
+          ["get", "serviceTier"],
+          "high",
+          "#eab308",
+          "medium",
+          "#60a5fa",
+          "#6b7280",
+        ]);
+  }
+
+  if (map.getLayer("aircraft-points")) {
+    map.setPaintProperty("aircraft-points", "circle-color", useBlue
+      ? [
+          "match",
+          ["get", "serviceTier"],
+          "high",
+          "#93c5fd",
+          "medium",
+          "#60a5fa",
+          "#94a3b8",
+        ]
+      : [
+          "match",
+          ["get", "serviceTier"],
+          "high",
+          "#facc15",
+          "medium",
+          "#60a5fa",
+          "#9ca3af",
+        ]);
+  }
+
+  if (map.getLayer("aircraft-clusters")) {
+    map.setPaintProperty(
+      "aircraft-clusters",
+      "circle-stroke-color",
+      useBlue ? "#60a5fa" : "#1d4ed8"
+    );
+  }
+}, [feedSource]);
 
   const flyToAirport = (feature: AirportFeature) => {
     const map = mapRef.current;
@@ -1036,9 +1659,19 @@ export default function MapPage() {
             </div>
             <div className="mt-1 text-2xl font-semibold">Global Airport Intelligence</div>
           </div>
-          <div className="rounded-full border border-yellow-500/30 bg-yellow-500/10 px-3 py-1 text-xs text-yellow-300">
-            LIVE
-          </div>
+         <div className="mb-3 rounded-2xl bg-white/5 px-4 py-3 text-sm text-white/70">
+          {isLoadingAircraft
+            ? "Refreshing aircraft layer…"
+            : aircraftError
+              ? `Aircraft warning: ${aircraftError}`
+              : feedMode === "live"
+                ? feedSource === "adsblol"
+                  ? "Live fallback feed active"
+                  : "Live aircraft feed active"
+                : feedMode === "delayed"
+                  ? "Live aircraft delayed · showing recent snapshot"
+                  : "Live unavailable · showing fallback traffic pattern"}
+        </div>
         </div>
 
         <div className="mb-4 grid grid-cols-4 gap-2 text-sm">
@@ -1069,14 +1702,71 @@ export default function MapPage() {
           >
             Airports
           </button>
-          <button
-            onClick={() => setShowAircraft((v) => !v)}
-            className={`rounded-2xl px-3 py-2 text-sm ${
-              showAircraft ? "bg-yellow-500 text-black" : "bg-white/5 text-white/70"
-            }`}
-          >
-            Aircraft
-          </button>
+         <div className="mt-4 rounded-2xl bg-white/5 p-4">
+          <div className="mb-2 text-xs uppercase tracking-[0.18em] text-white/45">
+            Flight Insight
+          </div>
+
+          <div className="space-y-2 text-sm">
+            <div className="flex items-center justify-between">
+              <span className="text-white/50">Registration</span>
+              <span className="text-white/85">{selectedAircraft.registration ?? "Unknown"}</span>
+            </div>
+
+            <div className="flex items-center justify-between">
+              <span className="text-white/50">Model</span>
+              <span className="text-right text-white/85">
+                {selectedAircraft.model ?? selectedAircraft.typecode ?? "Unknown"}
+              </span>
+            </div>
+
+            <div className="flex items-center justify-between">
+              <span className="text-white/50">Manufacturer</span>
+              <span className="text-right text-white/85">
+                {selectedAircraft.manufacturerName ?? "Unknown"}
+              </span>
+            </div>
+
+            <div className="flex items-center justify-between">
+              <span className="text-white/50">Operator</span>
+              <span className="text-right text-white/85">
+                {selectedAircraft.operator ?? "Unknown"}
+              </span>
+            </div>
+
+            <div className="flex items-center justify-between">
+              <span className="text-white/50">Weight class</span>
+              <span className="text-white/85">{selectedAircraft.weightClass ?? "unknown"}</span>
+            </div>
+
+            <div className="flex items-center justify-between">
+              <span className="text-white/50">Movement</span>
+              <span className="text-white/85">{selectedAircraft.movementClass ?? "unknown"}</span>
+            </div>
+
+            <div className="flex items-center justify-between">
+              <span className="text-white/50">Built</span>
+              <span className="text-white/85">{selectedAircraft.built ?? "Unknown"}</span>
+            </div>
+          </div>
+
+          <div className="mt-4">
+            <div className="mb-2 text-xs uppercase tracking-[0.18em] text-white/45">
+              Efficiency Flags
+            </div>
+
+            <div className="flex flex-wrap gap-2">
+              {(selectedAircraft.efficiencyFlags ?? ["No data"]).map((flag) => (
+                <div
+                  key={flag}
+                  className="rounded-full border border-blue-500/20 bg-blue-500/10 px-3 py-1 text-xs text-blue-300"
+                >
+                  {flag}
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
           <button
             onClick={() => setCharterOnly((v) => !v)}
             className={`rounded-2xl px-3 py-2 text-sm ${
@@ -1096,10 +1786,14 @@ export default function MapPage() {
 
         <div className="mb-3 rounded-2xl bg-white/5 px-4 py-3 text-sm text-white/70">
           {isLoadingAircraft
-            ? "Refreshing live aircraft…"
+            ? "Refreshing aircraft layer…"
             : aircraftError
-              ? `Aircraft error: ${aircraftError}`
-              : "Live aircraft feed active"}
+              ? `Aircraft warning: ${aircraftError}`
+              : feedMode === "live"
+                ? "Live aircraft feed active"
+                : feedMode === "delayed"
+                  ? "Live aircraft delayed · showing recent snapshot"
+                  : "Live unavailable · showing fallback traffic pattern"}
         </div>
 
         <div className="max-h-[260px] space-y-2 overflow-y-auto pr-1">
