@@ -23,33 +23,27 @@ import {
 /*
   AVIATION PLATFORM SIDEBAR
   -------------------------
-  This rewrite is intentionally conservative.
+  Conservative wiring pass.
 
-  SAFETY RULE FOR THIS PASS:
-  - Keep existing href targets that already work
-  - Change only product language, information architecture, and presentation
-  - Do not introduce new routes until the corresponding pages exist
+  RULES:
+  - Keep existing working href targets
+  - Enable routes that now exist
+  - Keep only true placeholders disabled
 
-  CURRENT ROUTE MAPPING:
-  - /dashboard         -> Command Center
-  - /chat              -> Intelligence
-  - /forms/occurrence  -> Assets
-  - /forms/teddy-bear  -> Airports
-  - /forms/shift       -> Reports
-  - /forms/status      -> Sources
-
-  TEMPORARY PRODUCT MAPPING:
-  - Assets       currently lands on the old intake flow
-  - Airports     currently lands on the old trends flow
-  - Reports      remains reports
-  - Sources      remains sources
-
-  PLACEHOLDER ITEMS:
-  - Operators
-  - Opportunities
-
-  Those remain visually present for product direction, but are disabled
-  until their routes are ready.
+  LIVE ROUTES:
+  - /dashboard
+  - /chat
+  - /forms/occurrence
+  - /forms/teddy-bear
+  - /forms/intelmap
+  - /forms/corsia-intelligence
+  - /forms/operators
+  - /forms/decision-queue
+  - /forms/opportunity-pipeline
+  - /forms/rewards-hub
+  - /forms/charter-referral-network
+  - /forms/status
+  - /forms/shift
 */
 
 type NavItem = {
@@ -64,22 +58,18 @@ const nav: NavItem[] = [
   { href: "/dashboard", label: "Command Center", icon: Radar },
   { href: "/chat", label: "Intelligence", icon: Bot },
 
-  // Existing working routes, relabeled for aviation use
   { href: "/forms/occurrence", label: "Assets", icon: Plane },
   { href: "/forms/teddy-bear", label: "Airports", icon: MapPinned },
-   { href: "/forms/intelmap", label: "Map", icon: Globe },
+  { href: "/forms/intelmap", label: "Map", icon: Globe },
 
-{ href: "/forms/decision-queue", label: "Decision Queue", icon: BriefcaseBusiness },
-{ href: "/forms/opportunity-pipeline", label: "Opportunity Pipeline", icon: Columns3 },
-{ href: "/forms/rewards-hub", label: "Rewards Hub", icon: CreditCard },
-{ href: "/forms/charter-referral-network", label: "Referral Network", icon: Link2 },
-  // Future sections intentionally shown but not wired yet
-  {
-    label: "Operators",
-    icon: Building2,
-    disabled: true,
-    note: "Coming soon",
-  },
+  { href: "/forms/corsia-intelligence", label: "CORSIA Intelligence", icon: ShieldCheck },
+  { href: "/forms/operators", label: "Operators", icon: Building2 },
+
+  { href: "/forms/decision-queue", label: "Decision Queue", icon: BriefcaseBusiness },
+  { href: "/forms/opportunity-pipeline", label: "Opportunity Pipeline", icon: Columns3 },
+  { href: "/forms/rewards-hub", label: "Rewards Hub", icon: CreditCard },
+  { href: "/forms/charter-referral-network", label: "Referral Network", icon: Link2 },
+
   {
     label: "Opportunities",
     icon: BriefcaseBusiness,
@@ -87,7 +77,6 @@ const nav: NavItem[] = [
     note: "Coming soon",
   },
 
-  // Existing working routes
   { href: "/forms/status", label: "Sources", icon: ShieldCheck },
   { href: "/forms/shift", label: "Reports", icon: FileBarChart2 },
 ];
@@ -145,8 +134,8 @@ export function Sidebar() {
       <div className="mt-6 rounded-3xl bg-white/5 p-4 text-xs text-zinc-400 shadow-[0_0_0_1px_rgba(255,255,255,.08)]">
         <div className="font-semibold text-zinc-200">MVP Focus</div>
         <div className="mt-1">
-          Aircraft tracking, airport context, source-backed intelligence, and
-          opportunity discovery across aviation operations.
+          Aircraft tracking, airport context, source-backed intelligence, operator workflow,
+          and opportunity discovery across aviation operations.
         </div>
       </div>
     </aside>

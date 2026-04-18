@@ -1,7 +1,11 @@
 "use client";
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import mapboxgl, { type GeoJSONSource, type MapMouseEvent } from "mapbox-gl";
+import mapboxgl, {
+  type GeoJSONSource,
+  type MapMouseEvent,
+  type FilterSpecification,
+} from "mapbox-gl";
 import "mapbox-gl/dist/mapbox-gl.css";
 import type { Feature, FeatureCollection, Point } from "geojson";
 
@@ -352,7 +356,7 @@ function buildAircraftGeoJson(
   states: OpenSkyState[],
   charterCarrierCounts: Map<string, number>,
   licenceCarrierCounts: Map<string, number>,
-  leadCandidateByIcao24: Map<string, boolean>
+  leadByIcao24: Map<string, CanadaLeadRecord>
 ): FeatureCollection<Point, AircraftProps> {
   const features: AircraftFeature[] = states
     .map((state) => {
@@ -365,8 +369,9 @@ function buildAircraftGeoJson(
       const charterCount = charterCarrierCounts.get(normalizedCallsign) ?? 0;
       const licenceCount = licenceCarrierCounts.get(normalizedCallsign) ?? 0;
       const icao24 = (state[0] ?? "unknown").trim().toLowerCase();
-      const isLeadCandidate = leadCandidateByIcao24.get(icao24) === true;
-      const leadScore = isLeadCandidate ? 70 : 0;
+      const matchedLead = leadByIcao24.get(icao24) ?? null;
+      const isLeadCandidate = matchedLead !== null;
+      const leadScore = matchedLead?.lead_score ?? (isLeadCandidate ? 1 : 0);
 
       let charterStatus: AircraftProps["charterStatus"] = "unknown";
       if (charterCount > 0) charterStatus = "confirmed";
@@ -410,6 +415,49 @@ function buildAircraftGeoJson(
   return {
     type: "FeatureCollection",
     features,
+  };
+}
+
+
+function enrichViewportLeads(
+  geojson: FeatureCollection<Point, AircraftProps>,
+  aircraftMetadataByModes: Map<string, AircraftMetadataRecord>,
+  canadaLeads: CanadaLeadRecord[],
+  canadaLeadsByRegistration: Map<string, CanadaLeadRecord>
+): FeatureCollection<Point, AircraftProps> {
+  return {
+    type: "FeatureCollection",
+    features: geojson.features.map((feature) => {
+      const icao24 = feature.properties.icao24;
+      const meta = aircraftMetadataByModes.get(icao24) ?? null;
+      if (!meta) return feature;
+
+      const exactLead =
+        canadaLeadsByRegistration.get(
+          normalizeRegistration(meta.registration ?? null)
+        ) ?? null;
+
+      const fuzzy = exactLead ? null : matchCanadaLead(meta, canadaLeads);
+
+      const matchedLead =
+        exactLead ??
+        (fuzzy && (fuzzy.confidence === "high" || fuzzy.confidence === "medium")
+          ? fuzzy.lead
+          : null);
+
+      if (!matchedLead) return feature;
+
+      return {
+        ...feature,
+        properties: {
+          ...feature.properties,
+          isLeadCandidate: true,
+          leadScore:
+            matchedLead.lead_score ??
+            (fuzzy?.confidence === "high" ? 80 : fuzzy?.confidence === "medium" ? 60 : 1),
+        },
+      };
+    }),
   };
 }
 
@@ -543,31 +591,6 @@ function getActionForAircraft(
   };
 }
 
-function computeLeadScore(input: {
-  exactLead: CanadaLeadRecord | null;
-  leadConfidence: "high" | "medium" | "low" | "none";
-  meta: AircraftMetadataRecord | null;
-  props: AircraftProps;
-  distanceNm: number | null;
-}): number {
-  let score = 0;
-
-  if (input.exactLead) score += 50;
-  else if (input.leadConfidence === "high") score += 40;
-  else if (input.leadConfidence === "medium") score += 25;
-  else if (input.leadConfidence === "low") score += 10;
-
-  if (input.meta?.registration) score += 10;
-  if (input.meta?.operator) score += 10;
-  if (input.meta?.model) score += 8;
-  if (input.props.serviceTier === "high") score += 15;
-  else if (input.props.serviceTier === "medium") score += 8;
-
-  if (input.props.onGround) score += 10;
-  if (input.distanceNm != null && input.distanceNm <= 25) score += 10;
-
-  return score;
-} 
 function buildAiContext(
   selectedAircraft: SelectedAircraft | null,
   selectedAirport: SelectedAirport | null
@@ -679,13 +702,27 @@ function buildAiContext(
   return "No aircraft or airport selected.";
 }
 
+function clampLongitude(value: number): number {
+  if (!Number.isFinite(value)) return 0;
+  return Math.max(-180, Math.min(180, value));
+}
+
+function clampLatitude(value: number): number {
+  if (!Number.isFinite(value)) return 0;
+  return Math.max(-85, Math.min(85, value));
+}
 
 function normalizeBounds(bounds: mapboxgl.LngLatBounds): NormalizedBounds {
+  const south = clampLatitude(bounds.getSouth());
+  const west = clampLongitude(bounds.getWest());
+  const north = clampLatitude(bounds.getNorth());
+  const east = clampLongitude(bounds.getEast());
+
   return {
-    lamin: Number(bounds.getSouth().toFixed(1)),
-    lomin: Number(bounds.getWest().toFixed(1)),
-    lamax: Number(bounds.getNorth().toFixed(1)),
-    lomax: Number(bounds.getEast().toFixed(1)),
+    lamin: Number(south.toFixed(1)),
+    lomin: Number(west.toFixed(1)),
+    lamax: Number(north.toFixed(1)),
+    lomax: Number(east.toFixed(1)),
   };
 }
 
@@ -707,15 +744,27 @@ function boundsChangedMeaningfully(
   );
 }
 
-function buildAircraftFilterExpression(charterOnly: boolean): mapboxgl.Expression {
-  return [
-    "all",
-    ["!", ["has", "point_count"]],
-    charterOnly
-      ? ["!=", ["get", "charterStatus"], "unknown"]
-      : ["literal", true],
-  ] as unknown as mapboxgl.Expression;
+function buildAircraftFilterExpression(
+  charterOnly: boolean,
+  leadOnly: boolean
+): FilterSpecification {
+  const base: FilterSpecification = ["!", ["has", "point_count"]];
 
+  if (!charterOnly && !leadOnly) {
+    return base;
+  }
+
+  const filters: FilterSpecification[] = [base];
+
+  if (charterOnly) {
+    filters.push(["!=", ["get", "charterStatus"], "unknown"]);
+  }
+
+  if (leadOnly) {
+    filters.push(["==", ["get", "isLeadCandidate"], true]);
+  }
+
+  return ["all", ...filters];
 }
 
 async function fetchJsonWithTimeout<T>(input: string, init?: RequestInit, timeoutMs = 6000): Promise<T> {
@@ -1063,6 +1112,8 @@ export default function MapPage() {
   const [showAircraft, setShowAircraft] = useState(true);
   const [charterOnly, setCharterOnly] = useState(false);
 
+  const [leadOnly, setLeadOnly] = useState(false);
+
   const [aiState, setAiState] = useState<AiPanelState>("open");
   const [aiQuery, setAiQuery] = useState("");
   const [aiAnswer, setAiAnswer] = useState(
@@ -1097,8 +1148,39 @@ const aircraftMetadataByModes = useMemo(() => {
   return map;
 }, [aircraftMetadata]);
 
-const leadCandidateByIcao24 = useMemo(() => {
-  const map = new Map<string, boolean>();
+const aircraftMetadataByRegistration = useMemo(() => {
+  const map = new Map<string, AircraftMetadataRecord>();
+
+  for (const row of aircraftMetadata) {
+    const reg = normalizeRegistration(row.registration);
+    if (!reg) continue;
+    map.set(reg, row);
+  }
+
+  return map;
+}, [aircraftMetadata]);
+
+const leadByIcao24 = useMemo(() => {
+  const map = new Map<string, CanadaLeadRecord>();
+
+  for (const row of canadaLeads) {
+    const leadReg = normalizeRegistration(row.registration ?? row.mark);
+    if (!leadReg) continue;
+
+    const meta = aircraftMetadataByRegistration.get(leadReg);
+    if (!meta) continue;
+
+    const key = (meta.icao24 ?? meta.modes ?? "").trim().toLowerCase();
+    if (!key) continue;
+
+    map.set(key, row);
+  }
+
+  return map;
+}, [canadaLeads, aircraftMetadataByRegistration]);
+
+/*const fuzzyLeadConfidenceByIcao24 = useMemo(() => {
+  const map = new Map<string, LeadMatchResult>();
 
   for (const row of aircraftMetadata) {
     const key = (row.icao24 ?? row.modes ?? "").trim().toLowerCase();
@@ -1109,14 +1191,23 @@ const leadCandidateByIcao24 = useMemo(() => {
         normalizeRegistration(row.registration ?? null)
       ) ?? null;
 
-    const scoredLeadMatch = exactLead ? null : matchCanadaLead(row, canadaLeads);
+    if (exactLead) {
+      map.set(key, {
+        lead: exactLead,
+        confidence: "high",
+        reason: "Exact registration match",
+      });
+      continue;
+    }
 
-    const rich = hasRichAircraftData(row, exactLead, scoredLeadMatch);
-    map.set(key, rich);
+    const fuzzy = matchCanadaLead(row, canadaLeads);
+    if (fuzzy.confidence === "high" || fuzzy.confidence === "medium") {
+      map.set(key, fuzzy);
+    }
   }
 
   return map;
-}, [aircraftMetadata, canadaLeads, canadaLeadsByRegistration]);
+}, [aircraftMetadata, canadaLeads, canadaLeadsByRegistration]);*/
 
   const charterCarrierCounts = useMemo(() => {
     const counts = new Map<string, number>();
@@ -1180,6 +1271,22 @@ const leadCandidateByIcao24 = useMemo(() => {
     return selectedAircraft ? getActionForAircraft(selectedAircraft) : null;
   }, [selectedAircraft]);
 
+  const visibleLeadAircraft = useMemo(() => {
+  const features = lastAircraftGeoJsonRef.current?.features ?? [];
+
+  return features
+    .filter((feature) => feature.properties.isLeadCandidate)
+    .slice(0, 12)
+    .map((feature) => ({
+      icao24: feature.properties.icao24,
+      callsign: feature.properties.callsign,
+      originCountry: feature.properties.originCountry,
+      serviceTier: feature.properties.serviceTier,
+      leadScore: feature.properties.leadScore,
+      coordinates: feature.geometry.coordinates as [number, number],
+    }));
+}, [aircraftCount, feedMode, selectedAircraft]);
+
  const applyAircraftDataToMap = useCallback(
   (
     response: OpenSkyResponse | PatternAircraftResponse,
@@ -1193,13 +1300,29 @@ const leadCandidateByIcao24 = useMemo(() => {
       states,
       charterCarrierCounts,
       licenceCarrierCounts,
-      leadCandidateByIcao24
+      leadByIcao24,
+    
     );
 
+    let finalGeojson = geojson;
+
+if (leadOnly) {
+  finalGeojson = enrichViewportLeads(
+    geojson,
+    aircraftMetadataByModes,
+    canadaLeads,
+    canadaLeadsByRegistration
+  );
+}
+ 
     const source = currentMap.getSource("aircraft") as GeoJSONSource | undefined;
-    if (source) {
-      source.setData(geojson);
+   if (source) {
+      source.setData(finalGeojson);
     }
+
+    lastAircraftGeoJsonRef.current = finalGeojson;
+    setAircraftCount(finalGeojson.features.length);
+        
 
     lastAircraftGeoJsonRef.current = geojson;
     setAircraftCount(geojson.features.length);
@@ -1216,7 +1339,16 @@ const leadCandidateByIcao24 = useMemo(() => {
       else setFeedSource("unknown");
     }
   },
-  [charterCarrierCounts, licenceCarrierCounts, leadCandidateByIcao24]
+  [
+    charterCarrierCounts,
+    licenceCarrierCounts,
+    leadByIcao24,
+    leadOnly,
+    aircraftMetadataByModes,
+    canadaLeads,
+    canadaLeadsByRegistration,
+
+]
 );
 
   const fetchPatternAircraftResponse = useCallback(
@@ -1345,6 +1477,14 @@ const leadCandidateByIcao24 = useMemo(() => {
     if (!bounds) return;
 
     const normalized = normalizeBounds(bounds);
+        if (
+      normalized.lamin >= normalized.lamax ||
+      normalized.lomin >= normalized.lomax
+    ) {
+      setAircraftError("Skipped invalid map bounds");
+      setIsLoadingAircraft(false);
+      return;
+    }
     const shouldFetch =
       options?.force === true ||
       boundsChangedMeaningfully(lastRequestedBoundsRef.current, normalized);
@@ -1459,6 +1599,9 @@ const leadCandidateByIcao24 = useMemo(() => {
     });
 
     mapRef.current = map;
+    map.on("error", (e) => {
+    console.error("Mapbox error:", e);
+  });
     map.addControl(new mapboxgl.NavigationControl(), "bottom-right");
 
     const handleAirportClusterClick = (e: mapboxgl.MapMouseEvent) => {
@@ -1534,18 +1677,47 @@ const handleAirportPointClick = (e: LayerClickEvent) => {
     const coords = feature.geometry.coordinates as [number, number];
     const props = feature.properties;
     const icao24 = (props.icao24 ?? "").trim().toLowerCase();
-
+    
     setSelectedAirport(null);
 
     const meta = aircraftMetadataByModes.get(icao24) ?? null;
+        if (!meta) {
+      const nearest = findNearestAirportFast(coords, airportGeoJson.features);
 
+      setSelectedAircraft({
+        ...props,
+        nearestAirportName: nearest.name,
+        nearestAirportIata: nearest.iata,
+        distanceNm: nearest.distanceNm,
+        registration: null,
+        manufacturerName: null,
+        model: null,
+        operator: null,
+        owner: null,
+        categoryDescription: null,
+        icaoAircraftClass: null,
+        engines: null,
+        built: null,
+        firstFlightDate: null,
+        status: null,
+        typecode: null,
+        weightClass: "unknown",
+        movementClass: classifyMovement(props),
+        efficiencyFlags: buildEfficiencyFlags(props, classifyMovement(props), "unknown"),
+        matchedLead: null,
+        leadMatchConfidence: "none",
+        leadMatchReason: "No aircraft metadata found",
+      });
+
+      return;
+    }
     const exactLead =
       canadaLeadsByRegistration.get(
         normalizeRegistration(meta?.registration ?? null)
       ) ?? null;
 
     const scoredLeadMatch = exactLead ? null : matchCanadaLead(meta, canadaLeads);
-
+    
     const finalLead = exactLead ?? scoredLeadMatch?.lead ?? null;
     const finalConfidence = exactLead ? "high" : scoredLeadMatch?.confidence ?? "none";
     const finalReason = exactLead
@@ -1605,6 +1777,7 @@ const handleAirportPointClick = (e: LayerClickEvent) => {
     };
 
     map.on("load", () => {
+      map.resize();
       setAirportCount(airportGeoJson.features.length);
 
       map.addSource("airports", {
@@ -1733,7 +1906,7 @@ const handleAirportPointClick = (e: LayerClickEvent) => {
         id: "aircraft-points-glow",
         type: "circle",
         source: "aircraft",
-        filter: buildAircraftFilterExpression(charterOnly),
+        filter: buildAircraftFilterExpression(charterOnly, leadOnly),
         paint: {
           "circle-color": [
             "case",
@@ -1749,16 +1922,26 @@ const handleAirportPointClick = (e: LayerClickEvent) => {
               "#9ca3af",
             ],
           ],
-          "circle-radius": [
-            "match",
-            ["get", "serviceTier"],
-            "high",
-            10,
-            "medium",
-            8,
+         "circle-radius": [
+            "case",
+            ["==", ["get", "isLeadCandidate"], true],
             6,
+            [
+              "match",
+              ["get", "serviceTier"],
+              "high",
+              4.5,
+              "medium",
+              3.5,
+              2.8,
+            ],
           ],
-          "circle-opacity": 0.2,
+          "circle-opacity": [
+            "case",
+            ["==", ["get", "isLeadCandidate"], true],
+            0.45,
+            0.2,
+          ],
           "circle-blur": 1,
         },
       });
@@ -1767,45 +1950,61 @@ const handleAirportPointClick = (e: LayerClickEvent) => {
         id: "aircraft-points",
         type: "circle",
         source: "aircraft",
-        filter: buildAircraftFilterExpression(charterOnly),
+        filter: buildAircraftFilterExpression(charterOnly, leadOnly),
         paint: {
           "circle-color": [
-            "match",
-            ["get", "serviceTier"],
-            "high",
-            "#facc15",
-            "medium",
-            "#60a5fa",
-            "#9ca3af",
+            "case",
+            ["==", ["get", "isLeadCandidate"], true],
+            "#fb923c",
+            [
+              "match",
+              ["get", "serviceTier"],
+              "high",
+              "#facc15",
+              "medium",
+              "#60a5fa",
+              "#9ca3af",
+            ],
           ],
-          "circle-radius": [
-            "match",
-            ["get", "serviceTier"],
-            "high",
-            4.5,
-            "medium",
-            3.5,
-            2.8,
+                    "circle-radius": [
+            "case",
+            ["==", ["get", "isLeadCandidate"], true],
+            6,
+            [
+              "match",
+              ["get", "serviceTier"],
+              "high",
+              4.5,
+              "medium",
+              3.5,
+              2.8,
+            ],
           ],
           "circle-stroke-width": 1,
           "circle-stroke-color": "#020617",
         },
       });
 
-      map.on("click", "airport-clusters", handleAirportClusterClick);
+     map.on("click", "airport-clusters", handleAirportClusterClick);
       map.on("click", "aircraft-clusters", handleAircraftClusterClick);
-      map.on("click", "airport-points", handleAirportPointClick);
-      map.on("click", "aircraft-points", handleAircraftPointClick);
 
-      for (const layer of [
-        "airport-clusters",
-        "airport-points",
-        "aircraft-clusters",
-        "aircraft-points",
-      ]) {
-        map.on("mouseenter", layer, cursorPointer);
-        map.on("mouseleave", layer, cursorReset);
-      }
+      map.on("click", "airport-points", handleAirportPointClick);
+      map.on("click", "airport-points-glow", handleAirportPointClick);
+
+      map.on("click", "aircraft-points", handleAircraftPointClick);
+      map.on("click", "aircraft-points-glow", handleAircraftPointClick);
+
+   for (const layer of [
+      "airport-clusters",
+      "airport-points",
+      "airport-points-glow",
+      "aircraft-clusters",
+      "aircraft-points",
+      "aircraft-points-glow",
+    ]) {
+      map.on("mouseenter", layer, cursorPointer);
+      map.on("mouseleave", layer, cursorReset);
+    }
 
       map.on("moveend", handleMoveEnd);
       document.addEventListener("visibilitychange", handleVisibilityChange);
@@ -1837,14 +2036,17 @@ const handleAirportPointClick = (e: LayerClickEvent) => {
 
       try {
         map.off("moveend", handleMoveEnd);
-        map.off("click", "airport-clusters", handleAirportClusterClick);
+       map.off("click", "airport-clusters", handleAirportClusterClick);
         map.off("click", "aircraft-clusters", handleAircraftClusterClick);
         map.off("click", "airport-points", handleAirportPointClick);
+        map.off("click", "airport-points-glow", handleAirportPointClick);
         map.off("click", "aircraft-points", handleAircraftPointClick);
+        map.off("click", "aircraft-points-glow", handleAircraftPointClick);
 
         for (const layer of [
           "airport-clusters",
           "airport-points",
+          "airport-points-glow",
           "aircraft-clusters",
           "aircraft-points",
         ]) {
@@ -1901,7 +2103,7 @@ const handleAirportPointClick = (e: LayerClickEvent) => {
     const map = mapRef.current;
     if (!map) return;
 
-    const filter = buildAircraftFilterExpression(charterOnly);
+    const filter = buildAircraftFilterExpression(charterOnly, leadOnly);
 
     if (map.getLayer("aircraft-points-glow")) {
       map.setFilter("aircraft-points-glow", filter);
@@ -1909,7 +2111,7 @@ const handleAirportPointClick = (e: LayerClickEvent) => {
     if (map.getLayer("aircraft-points")) {
       map.setFilter("aircraft-points", filter);
     }
-  }, [charterOnly]);
+  }, [charterOnly, leadOnly]);
 
   const flyToAirport = (feature: AirportFeature) => {
     const map = mapRef.current;
@@ -1995,126 +2197,236 @@ const handleAirportPointClick = (e: LayerClickEvent) => {
   }
 
   return (
-    <div className="relative h-screen w-full overflow-hidden bg-[#05070A] text-white">
-      <div ref={mapContainer} className="h-full w-full" />
+<div className="relative isolate h-screen w-full overflow-hidden bg-[#04070D] text-white">
+  <div ref={mapContainer} className="absolute inset-0 z-0 h-full w-full" />
 
-      <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_center,transparent_55%,rgba(0,0,0,0.35)_100%)]" />
+    <div className="pointer-events-none absolute inset-0 z-10 bg-[radial-gradient(circle_at_top,rgba(59,130,246,0.10),transparent_34%),radial-gradient(circle_at_center,transparent_52%,rgba(0,0,0,0.36)_100%)]" />
+<div className="pointer-events-none absolute inset-0 z-10 bg-[linear-gradient(180deg,rgba(255,255,255,0.03),transparent_18%,transparent_82%,rgba(0,0,0,0.20))]" />
 
-      <div className="absolute left-2 top-2 z-10 w-[92vw] max-w-[380px] rounded-3xl border border-white/10 bg-black/60 p-3 backdrop-blur-xl md:left-4 md:top-4 md:p-4">
-        <div className="mb-4 flex items-start justify-between">
+    {isLoadingAircraft && aircraftCount === 0 && (
+      <div className="pointer-events-none absolute left-1/2 top-4 z-30 -translate-x-1/2">
+        <div className="rounded-full border border-white/10 bg-black/55 px-4 py-2 text-sm text-white/80 shadow-2xl backdrop-blur-xl">
+          Loading live aviation intelligence…
+        </div>
+      </div>
+    )}
+
+         <div className="pointer-events-auto absolute left-2 top-2 z-40 w-[92vw] max-w-[380px] rounded-[28px] border border-white/10 bg-black/60 p-3 shadow-2xl backdrop-blur-2xl md:left-4 md:top-4 md:p-4">
+        <div className="mb-4 flex items-start justify-between gap-3">
           <div>
-            <div className="text-xs uppercase tracking-[0.24em] text-white/45">
+            <div className="text-[11px] uppercase tracking-[0.28em] text-white/40">
               Operations Map
             </div>
-            <div className="mt-1 text-2xl font-semibold">Global Airport Intelligence</div>
+            <div className="mt-1 text-2xl font-semibold leading-tight">
+              Global Airport Intelligence
+            </div>
+          </div>
+
+          <div className="rounded-2xl border border-white/10 bg-white/5 px-3 py-2 text-sm text-white/80">
+            {feedMode === "live"
+              ? "Live aircraft feed active"
+              : feedMode === "delayed"
+                ? "Delayed snapshot"
+                : "Fallback pattern"}
           </div>
         </div>
 
-          <div className="mb-3 grid grid-cols-3 gap-2">
-            <button
-              onClick={() => setShowAirports((v) => !v)}
-              className={`rounded-2xl px-3 py-2 text-sm ${
-                showAirports ? "bg-yellow-500 text-black" : "bg-white/5 text-white/70"
-              }`}
-            >
-              Airports
-            </button>
+        <div className="mb-3 grid grid-cols-2 gap-2">
+        <button
+          onClick={() => setShowAirports((v) => !v)}
+          className={`rounded-2xl px-3 py-2 text-sm transition ${
+            showAirports
+              ? "bg-yellow-500 text-black"
+              : "border border-white/10 bg-white/5 text-white/70 hover:bg-white/10"
+          }`}
+        >
+          Airports
+        </button>
 
-            <button
-              onClick={() => setShowAircraft((v) => !v)}
-              className={`rounded-2xl px-3 py-2 text-sm ${
-                showAircraft ? "bg-yellow-500 text-black" : "bg-white/5 text-white/70"
-              }`}
-            >
-              Aircraft
-            </button>
+        <button
+          onClick={() => setShowAircraft((v) => !v)}
+          className={`rounded-2xl px-3 py-2 text-sm transition ${
+            showAircraft
+              ? "bg-yellow-500 text-black"
+              : "border border-white/10 bg-white/5 text-white/70 hover:bg-white/10"
+          }`}
+        >
+          Aircraft
+        </button>
 
-            <button
-              onClick={() => setCharterOnly((v) => !v)}
-              className={`rounded-2xl px-3 py-2 text-sm ${
-                charterOnly ? "bg-yellow-500 text-black" : "bg-white/5 text-white/70"
-              }`}
-            >
-              Charter only
-            </button>
+        <button
+          onClick={() => setCharterOnly((v) => !v)}
+          className={`rounded-2xl px-3 py-2 text-sm transition ${
+            charterOnly
+              ? "bg-yellow-500 text-black"
+              : "border border-white/10 bg-white/5 text-white/70 hover:bg-white/10"
+          }`}
+        >
+          Charter only
+        </button>
+
+        <button
+          onClick={() => setLeadOnly((v: boolean) => !v)}
+          className={`rounded-2xl px-3 py-2 text-sm transition ${
+            leadOnly
+              ? "bg-orange-500 text-black"
+              : "border border-orange-500/20 bg-orange-500/10 text-orange-300 hover:bg-orange-500/20"
+          }`}
+        >
+          Leads only
+        </button>
+      </div>
+
+        <div className="mb-3 rounded-2xl border border-white/8 bg-white/5 p-4">
+          <div className="mb-2 text-xs uppercase tracking-[0.18em] text-white/45">
+            Network Overview
           </div>
 
-          {selectedAircraft && (
-            <div className="mb-3 rounded-2xl bg-white/5 p-4">
-              <div className="mb-2 text-xs uppercase tracking-[0.18em] text-white/45">
-                Flight Insight
+          <div className="grid grid-cols-2 gap-3">
+            <div className="rounded-2xl bg-black/20 p-3">
+              <div className="text-xs text-white/45">Airports</div>
+              <div className="mt-1 text-lg font-semibold">{airportCount.toLocaleString()}</div>
+            </div>
+
+            <div className="rounded-2xl bg-black/20 p-3">
+              <div className="text-xs text-white/45">Aircraft</div>
+              <div className="mt-1 text-lg font-semibold">{aircraftCount.toLocaleString()}</div>
+            </div>
+
+            <div className="rounded-2xl bg-black/20 p-3">
+              <div className="text-xs text-white/45">Feed mode</div>
+              <div className="mt-1 text-sm font-medium capitalize">{feedMode}</div>
+            </div>
+
+            <div className="rounded-2xl bg-black/20 p-3">
+              <div className="text-xs text-white/45">Source</div>
+              <div className="mt-1 text-sm font-medium capitalize">{feedSource}</div>
+            </div>
+          </div>
+        </div>
+
+        {selectedAircraft && (
+          <div className="mb-3 rounded-2xl border border-white/8 bg-white/5 p-4">
+            <div className="mb-2 text-xs uppercase tracking-[0.18em] text-white/45">
+              Flight Insight
+            </div>
+
+            <div className="space-y-2 text-sm">
+              <div className="flex items-center justify-between gap-3">
+                <span className="text-white/50">Registration</span>
+                <span className="text-right text-white/85">
+                  {selectedAircraft.registration ?? "Unknown"}
+                </span>
               </div>
 
-              <div className="space-y-2 text-sm">
-                <div className="flex items-center justify-between">
-                  <span className="text-white/50">Registration</span>
-                  <span className="text-white/85">{selectedAircraft.registration ?? "Unknown"}</span>
-                </div>
-
-                <div className="flex items-center justify-between">
-                  <span className="text-white/50">Model</span>
-                  <span className="text-right text-white/85">
-                    {selectedAircraft.model ?? selectedAircraft.typecode ?? "Unknown"}
-                  </span>
-                </div>
-
-                <div className="flex items-center justify-between">
-                  <span className="text-white/50">Manufacturer</span>
-                  <span className="text-right text-white/85">
-                    {selectedAircraft.manufacturerName ?? "Unknown"}
-                  </span>
-                </div>
-
-                <div className="flex items-center justify-between">
-                  <span className="text-white/50">Operator</span>
-                  <span className="text-right text-white/85">
-                    {selectedAircraft.operator ?? "Unknown"}
-                  </span>
-                </div>
-
-                <div className="flex items-center justify-between">
-                  <span className="text-white/50">Weight class</span>
-                  <span className="text-white/85">{selectedAircraft.weightClass ?? "unknown"}</span>
-                </div>
-
-                <div className="flex items-center justify-between">
-                  <span className="text-white/50">Movement</span>
-                  <span className="text-white/85">{selectedAircraft.movementClass ?? "unknown"}</span>
-                </div>
-
-                <div className="flex items-center justify-between">
-                  <span className="text-white/50">Built</span>
-                  <span className="text-white/85">{selectedAircraft.built ?? "Unknown"}</span>
-                </div>
+              <div className="flex items-center justify-between gap-3">
+                <span className="text-white/50">Model</span>
+                <span className="text-right text-white/85">
+                  {selectedAircraft.model ?? selectedAircraft.typecode ?? "Unknown"}
+                </span>
               </div>
 
-              <div className="mt-4">
-                <div className="mb-2 text-xs uppercase tracking-[0.18em] text-white/45">
-                  Efficiency Flags
-                </div>
+              <div className="flex items-center justify-between gap-3">
+                <span className="text-white/50">Manufacturer</span>
+                <span className="text-right text-white/85">
+                  {selectedAircraft.manufacturerName ?? "Unknown"}
+                </span>
+              </div>
 
-                <div className="flex flex-wrap gap-2">
-                  {(selectedAircraft.efficiencyFlags ?? ["No data"]).map((flag) => (
-                    <div
-                      key={flag}
-                      className="rounded-full border border-blue-500/20 bg-blue-500/10 px-3 py-1 text-xs text-blue-300"
-                    >
-                      {flag}
-                    </div>
-                  ))}
-                </div>
+              <div className="flex items-center justify-between gap-3">
+                <span className="text-white/50">Operator</span>
+                <span className="text-right text-white/85">
+                  {selectedAircraft.operator ?? "Unknown"}
+                </span>
+              </div>
+
+              <div className="flex items-center justify-between gap-3">
+                <span className="text-white/50">Weight class</span>
+                <span className="text-white/85">{selectedAircraft.weightClass ?? "unknown"}</span>
+              </div>
+
+              <div className="flex items-center justify-between gap-3">
+                <span className="text-white/50">Movement</span>
+                <span className="text-white/85">{selectedAircraft.movementClass ?? "unknown"}</span>
+              </div>
+
+              <div className="flex items-center justify-between gap-3">
+                <span className="text-white/50">Built</span>
+                <span className="text-white/85">{selectedAircraft.built ?? "Unknown"}</span>
               </div>
             </div>
-          )}
+
+            <div className="mt-4">
+              <div className="mb-2 text-xs uppercase tracking-[0.18em] text-white/45">
+                Efficiency Flags
+              </div>
+                
+              <div className="flex flex-wrap gap-2">
+                {(selectedAircraft.efficiencyFlags ?? ["No data"]).map((flag) => (
+                  <div
+                    key={flag}
+                    className="rounded-full border border-blue-500/20 bg-blue-500/10 px-3 py-1 text-xs text-blue-300"
+                  >
+                    {flag}
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
+
+        <div className="mb-3 rounded-2xl border border-orange-500/15 bg-orange-500/5 p-4">
+  <div className="mb-2 text-xs uppercase tracking-[0.18em] text-orange-300/70">
+    Lead Aircraft
+  </div>
+
+  <div className="mb-3 text-sm text-white/60">
+    {visibleLeadAircraft.length > 0
+      ? `${visibleLeadAircraft.length} lead aircraft in current view`
+      : "No mapped lead aircraft in current view"}
+  </div>
+
+      <div className="space-y-2">
+        {visibleLeadAircraft.map((item) => (
+          <button
+            key={item.icao24}
+            onClick={() => {
+              const map = mapRef.current;
+              if (!map) return;
+
+              map.easeTo({
+                center: item.coordinates,
+                zoom: Math.max(map.getZoom(), 8),
+                duration: 700,
+              });
+            }}
+            className="flex w-full items-center justify-between rounded-2xl border border-orange-500/10 bg-black/20 px-3 py-3 text-left transition hover:bg-orange-500/10"
+          >
+            <div className="min-w-0">
+              <div className="truncate font-medium text-white">
+                {item.callsign || item.icao24}
+              </div>
+              <div className="text-xs text-white/50">
+                {item.originCountry} · {item.serviceTier}
+              </div>
+            </div>
+
+            <div className="ml-3 rounded-full border border-orange-500/25 bg-orange-500/15 px-2 py-1 text-xs text-orange-300">
+              {item.leadScore ?? 1}
+            </div>
+          </button>
+        ))}
+      </div>
+    </div>
 
         <input
           value={searchText}
           onChange={(e) => setSearchText(e.target.value)}
           placeholder="Search airport, IATA, city, country"
-          className="mb-3 w-full rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm outline-none placeholder:text-white/35"
+          className="mb-3 w-full rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-white outline-none placeholder:text-white/35"
         />
 
-        <div className="mb-3 rounded-2xl bg-white/5 px-4 py-3 text-sm text-white/70">
+        <div className="mb-3 rounded-2xl border border-white/8 bg-white/5 px-4 py-3 text-sm text-white/70">
           {isLoadingAircraft
             ? "Refreshing aircraft layer…"
             : aircraftError
@@ -2133,13 +2445,13 @@ const handleAirportPointClick = (e: LayerClickEvent) => {
               onClick={() => flyToAirport(feature)}
               className="flex w-full items-start justify-between rounded-2xl border border-white/8 bg-white/5 px-3 py-3 text-left transition hover:bg-white/10"
             >
-              <div>
-                <div className="font-medium">{feature.properties.name}</div>
+              <div className="min-w-0">
+                <div className="truncate font-medium">{feature.properties.name}</div>
                 <div className="text-sm text-white/55">
                   {feature.properties.city}, {feature.properties.country}
                 </div>
               </div>
-              <div className="rounded-full border border-yellow-500/25 bg-yellow-500/10 px-2 py-1 text-xs text-yellow-300">
+              <div className="ml-3 rounded-full border border-yellow-500/25 bg-yellow-500/10 px-2 py-1 text-xs text-yellow-300">
                 {feature.properties.iata}
               </div>
             </button>
@@ -2147,15 +2459,66 @@ const handleAirportPointClick = (e: LayerClickEvent) => {
         </div>
       </div>
 
-      <div className="absolute right-2 top-2 z-10 w-[92vw] max-w-[380px] rounded-3xl border border-white/10 bg-black/65 p-3 backdrop-blur-xl md:right-4 md:top-4 md:p-4">
-        {selectedAircraft ? (
-          <div>
-            <div className="mb-1 text-xs uppercase tracking-[0.24em] text-white/45">
-              Selected Aircraft
-            </div>
-            <div className="text-2xl font-semibold">{selectedAircraft.callsign}</div>
-            <div className="mt-1 text-sm text-white/60">{selectedAircraft.originCountry}</div>
+      <div className="pointer-events-auto absolute right-2 top-2 z-40 w-[92vw] max-w-[380px] rounded-[28px] border border-white/10 bg-black/65 p-3 shadow-2xl backdrop-blur-2xl md:right-4 md:top-4 md:p-4">
+        <div className="mb-1 text-xs uppercase tracking-[0.24em] text-white/45">
+          Live Intelligence
+        </div>
+        <div className="text-2xl font-semibold">
+          {selectedAircraft
+            ? "Selected Aircraft"
+            : selectedAirport
+              ? "Selected Airport"
+              : "Global Overview"}
+        </div>
+        <div className="mt-1 text-sm text-white/60">
+          {selectedAircraft
+            ? selectedAircraft.originCountry
+            : selectedAirport
+              ? `${selectedAirport.city}, ${selectedAirport.country}`
+              : "Select an airport or aircraft to inspect live operational context."}
+        </div>
 
+        {!selectedAircraft && !selectedAirport && (
+          <>
+            <div className="mt-4 grid grid-cols-2 gap-3">
+              <div className="rounded-2xl bg-white/5 p-3">
+                <div className="text-xs text-white/45">Tracked airports</div>
+                <div className="mt-1 text-lg font-semibold">{airportCount.toLocaleString()}</div>
+              </div>
+              <div className="rounded-2xl bg-white/5 p-3">
+                <div className="text-xs text-white/45">Visible aircraft</div>
+                <div className="mt-1 text-lg font-semibold">{aircraftCount.toLocaleString()}</div>
+              </div>
+              <div className="rounded-2xl bg-white/5 p-3">
+                <div className="text-xs text-white/45">Feed mode</div>
+                <div className="mt-1 text-lg font-semibold capitalize">{feedMode}</div>
+              </div>
+              <div className="rounded-2xl bg-white/5 p-3">
+                <div className="text-xs text-white/45">Source</div>
+                <div className="mt-1 text-lg font-semibold capitalize">{feedSource}</div>
+              </div>
+            </div>
+
+            <div className="mt-4 rounded-2xl bg-white/5 p-4">
+              <div className="mb-2 text-sm font-medium text-white/85">
+                Top global charter-active carriers
+              </div>
+              <div className="space-y-2">
+                {topCharterCarriers.slice(0, 6).map((item) => (
+                  <div key={item.name} className="flex items-center justify-between text-sm">
+                    <span className="truncate text-white/70">{item.name}</span>
+                    <span className="rounded-full bg-yellow-500/10 px-2 py-1 text-xs text-yellow-300">
+                      {item.count}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </>
+        )}
+
+        {selectedAircraft && (
+          <>
             <div className="mt-4 flex flex-wrap gap-2">
               <div className="rounded-full border border-yellow-500/25 bg-yellow-500/10 px-3 py-1 text-xs text-yellow-300">
                 {selectedAircraft.charterStatus}
@@ -2207,82 +2570,82 @@ const handleAirportPointClick = (e: LayerClickEvent) => {
                 {selectedAircraft.distanceNm != null ? ` · ${selectedAircraft.distanceNm} nm` : ""}
               </div>
             </div>
-            
+
             {selectedAircraft.matchedLead && (
-            <div className="mt-4 rounded-2xl bg-white/5 p-4">
-              <div className="mb-2 text-xs uppercase tracking-[0.18em] text-white/45">
-                Lead Intelligence
+              <div className="mt-4 rounded-2xl bg-white/5 p-4">
+                <div className="mb-2 text-xs uppercase tracking-[0.18em] text-white/45">
+                  Lead Intelligence
+                </div>
+
+                <div className="space-y-2 text-sm">
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="text-white/50">Company</span>
+                    <span className="text-right text-white/85">
+                      {selectedAircraft.matchedLead.company_name ?? "Unknown"}
+                    </span>
+                  </div>
+
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="text-white/50">Lead match</span>
+                    <span className="text-white/85">
+                      {selectedAircraft.leadMatchConfidence ?? "none"}
+                    </span>
+                  </div>
+
+                  <div className="text-xs text-white/45">
+                    {selectedAircraft.leadMatchReason ?? "No match explanation"}
+                  </div>
+
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="text-white/50">Contact</span>
+                    <span className="text-right text-white/85">
+                      {getPremiumField(selectedAircraft.matchedLead.contact_name, isPremiumUnlocked)}
+                    </span>
+                  </div>
+
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="text-white/50">Email</span>
+                    <span className="text-right text-white/85">
+                      {getPremiumField(selectedAircraft.matchedLead.email, isPremiumUnlocked)}
+                    </span>
+                  </div>
+
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="text-white/50">Phone</span>
+                    <span className="text-right text-white/85">
+                      {getPremiumField(selectedAircraft.matchedLead.phone, isPremiumUnlocked)}
+                    </span>
+                  </div>
+
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="text-white/50">Website</span>
+                    <span className="text-right text-white/85">
+                      {getPremiumField(selectedAircraft.matchedLead.website_candidate, isPremiumUnlocked)}
+                    </span>
+                  </div>
+
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="text-white/50">Priority</span>
+                    <span className="text-white/85">
+                      {selectedAircraft.matchedLead.priority_band ?? "Unknown"}
+                    </span>
+                  </div>
+
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="text-white/50">Lead score</span>
+                    <span className="text-white/85">
+                      {selectedAircraft.matchedLead.lead_score ?? "Unknown"}
+                    </span>
+                  </div>
+                </div>
+
+                {!isPremiumUnlocked && (
+                  <div className="mt-3 rounded-xl border border-yellow-500/20 bg-yellow-500/10 px-3 py-2 text-xs text-yellow-300">
+                    Premium unlock required for full contact details
+                  </div>
+                )}
               </div>
-
-              <div className="space-y-2 text-sm">
-                <div className="flex items-center justify-between">
-                  <span className="text-white/50">Company</span>
-                  <span className="text-right text-white/85">
-                    {selectedAircraft.matchedLead.company_name ?? "Unknown"}
-                  </span>
-                </div>
-
-                <div className="flex items-center justify-between">
-                  <span className="text-white/50">Lead match</span>
-                  <span className="text-white/85">
-                    {selectedAircraft.leadMatchConfidence ?? "none"}
-                  </span>
-                </div>
-
-                <div className="text-xs text-white/45">
-                  {selectedAircraft.leadMatchReason ?? "No match explanation"}
-                </div>
-
-                <div className="flex items-center justify-between">
-                  <span className="text-white/50">Contact</span>
-                  <span className="text-right text-white/85">
-                    {getPremiumField(selectedAircraft.matchedLead.contact_name, isPremiumUnlocked)}
-                  </span>
-                </div>
-
-                <div className="flex items-center justify-between">
-                  <span className="text-white/50">Email</span>
-                  <span className="text-right text-white/85">
-                    {getPremiumField(selectedAircraft.matchedLead.email, isPremiumUnlocked)}
-                  </span>
-                </div>
-
-                <div className="flex items-center justify-between">
-                  <span className="text-white/50">Phone</span>
-                  <span className="text-right text-white/85">
-                    {getPremiumField(selectedAircraft.matchedLead.phone, isPremiumUnlocked)}
-                  </span>
-                </div>
-
-                <div className="flex items-center justify-between">
-                  <span className="text-white/50">Website</span>
-                  <span className="text-right text-white/85">
-                    {getPremiumField(selectedAircraft.matchedLead.website_candidate, isPremiumUnlocked)}
-                  </span>
-                </div>
-
-                <div className="flex items-center justify-between">
-                  <span className="text-white/50">Priority</span>
-                  <span className="text-white/85">
-                    { selectedAircraft.matchedLead.priority_band ?? "Unknown"}
-                  </span>
-                </div>
-
-                <div className="flex items-center justify-between">
-                  <span className="text-white/50">Lead score</span>
-                  <span className="text-white/85">
-                    {selectedAircraft.matchedLead.lead_score ?? "Unknown"}
-                  </span>
-                </div>
-              </div>
-
-              {!isPremiumUnlocked && (
-                <div className="mt-3 rounded-xl border border-yellow-500/20 bg-yellow-500/10 px-3 py-2 text-xs text-yellow-300">
-                  Premium unlock required for full contact details
-                </div>
-              )}
-            </div>
-)}
+            )}
 
             {selectedAircraftAction && (
               <div className="mt-4 rounded-2xl bg-white/5 p-4">
@@ -2312,47 +2675,39 @@ const handleAirportPointClick = (e: LayerClickEvent) => {
                 </div>
               </div>
             )}
-
+          <div className="mt-4 grid grid-cols-1 gap-2">
+            <button
+              onClick={() =>
+                askAi(
+                  "Find the most likely lead, operator, owner, and outreach angle for this aircraft using the current aircraft context."
+                )
+              }
+              className="w-full rounded-2xl border border-orange-500/30 bg-orange-500/15 py-3 text-sm font-medium text-orange-300 transition hover:bg-orange-500/25"
+            >
+              Find lead
+            </button>
+          </div>
+          <button
+            onClick={() =>
+              askAi(
+                "Turn this selected aircraft into a lead brief with company type, likely buyer, service angle, and next outreach step."
+              )
+            }
+            className="w-full rounded-2xl border border-white/10 bg-white/5 py-3 text-sm font-medium text-white transition hover:bg-white/10"
+          >
+            Build lead brief
+          </button>
             <button
               onClick={() => setSelectedAircraft(null)}
               className="mt-4 w-full rounded-2xl bg-yellow-500 py-3 text-sm font-medium text-black transition hover:bg-yellow-400"
             >
               Clear aircraft selection
             </button>
-          </div>
-        ) : !selectedAirport ? (
-          <div>
-            <div className="mb-2 text-xl font-semibold">Live Intelligence</div>
-            <div className="mb-4 text-sm text-white/60">
-              Select an airport or aircraft to inspect live operational context.
-            </div>
+          </>
+        )}
 
-            <div className="rounded-2xl bg-white/5 p-4">
-              <div className="mb-2 text-sm font-medium text-white/85">
-                Top global charter-active carriers
-              </div>
-              <div className="space-y-2">
-                {topCharterCarriers.slice(0, 6).map((item) => (
-                  <div key={item.name} className="flex items-center justify-between text-sm">
-                    <span className="truncate text-white/70">{item.name}</span>
-                    <span className="rounded-full bg-yellow-500/10 px-2 py-1 text-xs text-yellow-300">
-                      {item.count}
-                    </span>
-                  </div>
-                ))}
-              </div>
-            </div>
-          </div>
-        ) : (
-          <div>
-            <div className="mb-1 text-xs uppercase tracking-[0.24em] text-white/45">
-              Selected Airport
-            </div>
-            <div className="text-2xl font-semibold">{selectedAirport.name}</div>
-            <div className="mt-1 text-sm text-white/60">
-              {selectedAirport.city}, {selectedAirport.country}
-            </div>
-
+        {selectedAirport && (
+          <>
             <div className="mt-4 flex items-center gap-2">
               <div className="rounded-full border border-yellow-500/25 bg-yellow-500/10 px-3 py-1 text-xs text-yellow-300">
                 {selectedAirport.iata}
@@ -2440,17 +2795,17 @@ const handleAirportPointClick = (e: LayerClickEvent) => {
             >
               Clear airport selection
             </button>
-          </div>
+          </>
         )}
       </div>
 
       {aiState !== "hidden" && (
         <div
-          className={`absolute bottom-5 left-1/2 z-20 -translate-x-1/2 transition-all ${
+          className={`absolute bottom-5 left-1/2 z-30 -translate-x-1/2 transition-all ${
             aiState === "collapsed" ? "w-[92vw] max-w-[320px]" : "w-[92vw] max-w-[760px]"
           }`}
         >
-          <div className="rounded-3xl border border-white/10 bg-black/70 shadow-2xl backdrop-blur-xl">
+          <div className="rounded-[28px] border border-white/10 bg-black/70 shadow-2xl backdrop-blur-2xl">
             <div className="flex items-center justify-between gap-3 border-b border-white/10 px-4 py-3">
               <div>
                 <div className="text-xs uppercase tracking-[0.24em] text-white/45">
@@ -2551,10 +2906,10 @@ const handleAirportPointClick = (e: LayerClickEvent) => {
         </div>
       )}
 
-      {aiState === "hidden" && (
+            {aiState === "hidden" && (
         <button
           onClick={() => setAiState("open")}
-          className="absolute bottom-5 left-1/2 z-20 -translate-x-1/2 rounded-full border border-white/10 bg-black/70 px-5 py-3 text-sm text-white shadow-2xl backdrop-blur-xl"
+          className="absolute bottom-5 left-1/2 z-30 -translate-x-1/2 rounded-full border border-white/10 bg-black/70 px-5 py-3 text-sm text-white shadow-2xl backdrop-blur-2xl"
         >
           Open AI search
         </button>
