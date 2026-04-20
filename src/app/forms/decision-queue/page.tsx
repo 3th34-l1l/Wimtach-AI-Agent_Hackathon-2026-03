@@ -1,13 +1,15 @@
 "use client";
 
-import React, { useMemo, useState } from "react";
+import Link from "next/link";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
   AlertTriangle,
-  ArrowRight,
   BriefcaseBusiness,
   Clock3,
   Filter,
+  Loader2,
   Plane,
+  RefreshCw,
   Search,
   ShieldCheck,
   Sparkles,
@@ -24,6 +26,7 @@ type QueueStatus =
   | "expired";
 
 type Priority = "high" | "medium" | "low";
+
 type OpportunityType =
   | "detailing"
   | "charter_sales"
@@ -33,186 +36,143 @@ type OpportunityType =
 
 type ServiceLine = "Nous Aviation" | "Nous Systems Group" | "Both";
 
-type Recommendation = {
-  id: string;
-  title: string;
-  subtitle: string;
-  airport: string;
-  route?: string;
-  operator: string;
-  aircraftType: string;
-  tail?: string;
-  status: QueueStatus;
-  priority: Priority;
-  opportunityType: OpportunityType;
-  serviceLine: ServiceLine;
-  estimatedValue: number;
-  confidence: number;
-  urgency: number;
-  actionWindow: string;
-  surfacedAt: string;
-  owner?: string | null;
-  whySurfaced: string[];
-  recommendedAction: string;
-  suggestedChannel: string;
-  suggestedTiming: string;
-  playbook: string;
-  sourceLevel: "Observed" | "Inferred" | "Mixed";
-  observedVsInferred: string;
-  signalTypes: string[];
-  eventTrail: Array<{
-    label: string;
-    time: string;
-  }>;
+type QueueEvent = {
+  id?: string;
+  eventType?: string;
+  eventLabel: string;
+  actor?: string | null;
+  occurredAt?: string | null;
+  payload?: Record<string, unknown>;
 };
 
-const INITIAL_RECOMMENDATIONS: Recommendation[] = [
-  {
-    id: "DQ-1001",
-    title: "Offer detailing during overnight dwell at CYTZ",
-    subtitle: "N812QS • Challenger 350 • NetJets-style pattern • CYTZ",
-    airport: "CYTZ",
-    operator: "NetJets-style operator",
-    aircraftType: "Challenger 350",
-    tail: "N812QS",
-    status: "new",
-    priority: "high",
-    opportunityType: "detailing",
-    serviceLine: "Nous Systems Group",
-    estimatedValue: 4200,
-    confidence: 84,
-    urgency: 91,
-    actionWindow: "Next 3 hours",
-    surfacedAt: "12 min ago",
-    owner: null,
-    whySurfaced: [
-      "Aircraft appears on ground near premium airport context",
-      "Business jet profile with likely overnight dwell window",
-      "High-fit detailing opportunity within serviceable range",
-    ],
-    recommendedAction: "Call FBO / line service and position detailing offer",
-    suggestedChannel: "Phone first, email follow-up",
-    suggestedTiming: "Within 30 minutes",
-    playbook: "Overnight detailing package with priority turnaround option",
-    sourceLevel: "Mixed",
-    observedVsInferred: "Observed movement + inferred service fit",
-    signalTypes: ["on_ground", "premium_airport", "business_jet", "service_fit"],
-    eventTrail: [
-      { label: "Aircraft detected near CYTZ", time: "18 min ago" },
-      { label: "Grounded state confirmed", time: "15 min ago" },
-      { label: "Service-fit logic matched", time: "13 min ago" },
-      { label: "Recommendation published", time: "12 min ago" },
-    ],
-  },
-  {
-    id: "DQ-1002",
-    title: "Pitch charter offer for repeat Toronto–Miami luxury corridor",
-    subtitle: "G650 • Repeat premium corridor • CYYZ → KMIA",
-    airport: "CYYZ",
-    route: "CYYZ → KMIA",
-    operator: "Unresolved private operator",
-    aircraftType: "Gulfstream G650",
-    tail: "N650LX",
-    status: "reviewing",
-    priority: "high",
-    opportunityType: "charter_sales",
-    serviceLine: "Nous Aviation",
-    estimatedValue: 85000,
-    confidence: 79,
-    urgency: 76,
-    actionWindow: "Next 24 hours",
-    surfacedAt: "31 min ago",
-    owner: "Ava",
-    whySurfaced: [
-      "Premium long-range jet on high-value leisure/business corridor",
-      "Pattern resembles repeat charter-style usage",
-      "Strong fit for concierge + charter follow-up",
-    ],
-    recommendedAction: "Add to charter outreach queue with corridor-specific pitch",
-    suggestedChannel: "Email intro + call",
-    suggestedTiming: "Today",
-    playbook: "Luxury charter package with concierge positioning",
-    sourceLevel: "Inferred",
-    observedVsInferred: "Inferred route pattern and commercial fit",
-    signalTypes: ["repeat_corridor", "heavy_jet", "premium_route"],
-    eventTrail: [
-      { label: "Route pattern matched", time: "47 min ago" },
-      { label: "Opportunity scored", time: "38 min ago" },
-      { label: "Assigned to Ava", time: "32 min ago" },
-      { label: "Review started", time: "31 min ago" },
-    ],
-  },
-  {
-    id: "DQ-1003",
-    title: "Open airport partnership conversation at YTZ",
-    subtitle: "Recurring premium traffic with service gap signals",
-    airport: "CYTZ",
-    operator: "Airport / FBO ecosystem",
-    aircraftType: "Mixed business traffic",
-    status: "new",
-    priority: "medium",
-    opportunityType: "operator_partnership",
-    serviceLine: "Both",
-    estimatedValue: 25000,
-    confidence: 72,
-    urgency: 58,
-    actionWindow: "This week",
-    surfacedAt: "1 hr ago",
-    owner: null,
-    whySurfaced: [
-      "Recurring premium aircraft presence",
-      "Multiple service-compatible arrivals in short period",
-      "Good candidate for recurring relationship instead of one-off outreach",
-    ],
-    recommendedAction: "Research FBO contact path and open partnership intro",
-    suggestedChannel: "Warm intro / email",
-    suggestedTiming: "Within 48 hours",
-    playbook: "Airport service partnership conversation",
-    sourceLevel: "Mixed",
-    observedVsInferred: "Observed traffic + inferred commercial whitespace",
-    signalTypes: ["traffic_density", "repeat_business_aviation", "partnership_fit"],
-    eventTrail: [
-      { label: "Traffic cluster detected", time: "2 hrs ago" },
-      { label: "Service gap model matched", time: "89 min ago" },
-      { label: "Recommendation published", time: "1 hr ago" },
-    ],
-  },
-  {
-    id: "DQ-1004",
-    title: "Monitor possible repositioning candidate near CYHM",
-    subtitle: "Mid-size jet • non-scheduled pattern • low immediate fit",
-    airport: "CYHM",
-    operator: "Unknown",
-    aircraftType: "Citation XLS",
-    tail: "N477XL",
-    status: "new",
-    priority: "low",
-    opportunityType: "concierge",
-    serviceLine: "Nous Aviation",
-    estimatedValue: 9500,
-    confidence: 53,
-    urgency: 34,
-    actionWindow: "Monitor",
-    surfacedAt: "2 hrs ago",
-    owner: null,
-    whySurfaced: [
-      "Non-scheduled movement pattern",
-      "Some premium indicators present",
-      "Current commercial fit weaker than top opportunities",
-    ],
-    recommendedAction: "Monitor movement and wait for stronger pattern",
-    suggestedChannel: "No outreach yet",
-    suggestedTiming: "Re-evaluate later",
-    playbook: "Monitor-only",
-    sourceLevel: "Inferred",
-    observedVsInferred: "Inferred from movement pattern",
-    signalTypes: ["non_scheduled_pattern", "possible_reposition"],
-    eventTrail: [
-      { label: "Pattern candidate detected", time: "2 hrs ago" },
-      { label: "Scored below outreach threshold", time: "116 min ago" },
-    ],
-  },
-];
+type QueueSignal = {
+  id?: string;
+  signalType?: string;
+  signalSource?: string;
+  observed?: boolean;
+  confidence?: number | null;
+  payload?: Record<string, unknown>;
+  occurredAt?: string | null;
+};
+
+type Recommendation = {
+  id: string;
+  externalKey: string;
+  title: string;
+  subtitle: string | null;
+  airport: string | null;
+  route: string | null;
+  operatorName: string | null;
+  aircraftType: string | null;
+  tail: string | null;
+  status: QueueStatus;
+  priority: Priority;
+  opportunityType: OpportunityType | string;
+  serviceLine: ServiceLine | string;
+  estimatedValueCad: number;
+  confidence: number;
+  urgency: number;
+  actionWindow: string | null;
+  surfacedAt: string;
+  owner: string | null;
+  recommendedAction: string | null;
+  suggestedChannel: string | null;
+  suggestedTiming: string | null;
+  playbook: string | null;
+  sourceLevel: "Observed" | "Inferred" | "Mixed" | string | null;
+  observedVsInferred: string | null;
+  crmRecordId: string | null;
+  whySurfaced: string[];
+  signalTypes: string[];
+  eventTrail: Array<{ label: string; time: string }>;
+  events?: QueueEvent[];
+  signals?: QueueSignal[];
+};
+
+type QueueListResponse = {
+  ok: boolean;
+  items?: unknown[];
+  count?: number;
+  kpis?: {
+    openActions: number;
+    highPriority: number;
+    expiringSoon: number;
+    estimatedPipelineValue: number;
+    sentToCrmToday: number;
+    actionedToday: number;
+  };
+  error?: string;
+};
+
+type QueueItemResponse = {
+  ok: boolean;
+  item?: unknown;
+  error?: string;
+};
+
+function currency(n: number) {
+  return new Intl.NumberFormat("en-CA", {
+    style: "currency",
+    currency: "CAD",
+    maximumFractionDigits: 0,
+  }).format(n);
+}
+
+function titleCaseStatus(status: string) {
+  return status.replaceAll("_", " ");
+}
+
+function timeAgo(input?: string | null) {
+  if (!input) return "Unknown";
+  const ts = new Date(input).getTime();
+  if (Number.isNaN(ts)) return input;
+  const diff = Date.now() - ts;
+  const mins = Math.floor(diff / 60000);
+  if (mins < 1) return "Just now";
+  if (mins < 60) return `${mins} min ago`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours} hr ago`;
+  const days = Math.floor(hours / 24);
+  return `${days} day ago`;
+}
+
+function safeString(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function safeNumber(value: unknown, fallback = 0) {
+  return typeof value === "number" && Number.isFinite(value) ? value : fallback;
+}
+
+function safeArray<T>(value: unknown): T[] {
+  return Array.isArray(value) ? (value as T[]) : [];
+}
+
+function asStatus(value: unknown): QueueStatus {
+  switch (value) {
+    case "new":
+    case "reviewing":
+    case "approved":
+    case "sent_to_crm":
+    case "snoozed":
+    case "dismissed":
+    case "expired":
+      return value;
+    default:
+      return "new";
+  }
+}
+
+function asPriority(value: unknown): Priority {
+  switch (value) {
+    case "high":
+    case "medium":
+    case "low":
+      return value;
+    default:
+      return "low";
+  }
+}
 
 function priorityClasses(priority: Priority) {
   if (priority === "high") return "bg-red-500/15 text-red-300 border-red-400/20";
@@ -239,7 +199,7 @@ function statusClasses(status: QueueStatus) {
   }
 }
 
-function typeLabel(type: OpportunityType) {
+function typeLabel(type: string) {
   switch (type) {
     case "detailing":
       return "Detailing";
@@ -251,82 +211,309 @@ function typeLabel(type: OpportunityType) {
       return "Concierge";
     case "multi_service":
       return "Multi-service";
+    default:
+      return type.replaceAll("_", " ");
   }
 }
 
-function currency(n: number) {
-  return new Intl.NumberFormat("en-CA", {
-    style: "currency",
-    currency: "CAD",
-    maximumFractionDigits: 0,
-  }).format(n);
+function signalLabel(signal: string) {
+  return signal.replaceAll("_", " ");
+}
+
+function normalizeQueueItem(raw: any): Recommendation {
+  const events: QueueEvent[] = safeArray<any>(raw.events).map((event) => ({
+    id: safeString(event.id) ?? undefined,
+    eventType: safeString(event.eventType ?? event.event_type) ?? undefined,
+    eventLabel:
+      safeString(event.eventLabel ?? event.event_label) ?? "Queue event",
+    actor: safeString(event.actor),
+    occurredAt: safeString(event.occurredAt ?? event.occurred_at),
+    payload:
+      typeof event.payload === "object" && event.payload !== null
+        ? event.payload
+        : {},
+  }));
+
+  const signals: QueueSignal[] = safeArray<any>(raw.signals).map((signal) => ({
+    id: safeString(signal.id) ?? undefined,
+    signalType: safeString(signal.signalType ?? signal.signal_type) ?? undefined,
+    signalSource: safeString(signal.signalSource ?? signal.signal_source) ?? undefined,
+    observed: typeof signal.observed === "boolean" ? signal.observed : undefined,
+    confidence:
+      typeof signal.confidence === "number" ? signal.confidence : null,
+    payload:
+      typeof signal.payload === "object" && signal.payload !== null
+        ? signal.payload
+        : {},
+    occurredAt: safeString(signal.occurredAt ?? signal.occurred_at),
+  }));
+
+  const derivedWhySurfaced = (() => {
+    const fromPayload = events
+      .flatMap((event) => {
+        const payload = event.payload ?? {};
+        const whySurfaced = (payload.whySurfaced ?? payload.why_surfaced) as unknown;
+        return safeArray<string>(whySurfaced);
+      })
+      .filter(Boolean);
+
+    if (fromPayload.length > 0) return fromPayload.slice(0, 4);
+
+    const fallback: string[] = [];
+    if (safeString(raw.observedVsInferred ?? raw.observed_vs_inferred)) {
+      fallback.push(
+        safeString(raw.observedVsInferred ?? raw.observed_vs_inferred) as string
+      );
+    }
+    if (safeString(raw.recommendedAction ?? raw.recommended_action)) {
+      fallback.push(
+        safeString(raw.recommendedAction ?? raw.recommended_action) as string
+      );
+    }
+    if (safeString(raw.airport)) {
+      fallback.push(`Active signal context around ${raw.airport}.`);
+    }
+    return fallback.length ? fallback.slice(0, 4) : ["Lead scored from live queue signals."];
+  })();
+
+  const derivedSignalTypes = (() => {
+    const fromPayload = events
+      .flatMap((event) => {
+        const payload = event.payload ?? {};
+        const signalTypes = (payload.signalTypes ?? payload.signal_types) as unknown;
+        return safeArray<string>(signalTypes);
+      })
+      .filter(Boolean);
+
+    if (fromPayload.length > 0) return Array.from(new Set(fromPayload));
+
+    const fromSignals = signals
+      .map((signal) => signal.signalType)
+      .filter((value): value is string => Boolean(value));
+
+    return Array.from(new Set(fromSignals));
+  })();
+
+  const eventTrail =
+    events.length > 0
+      ? events.map((event) => ({
+          label: event.eventLabel,
+          time: timeAgo(event.occurredAt),
+        }))
+      : [
+          {
+            label: "Recommendation surfaced",
+            time: timeAgo(
+              safeString(raw.lastSeenAt ?? raw.last_seen_at ?? raw.updatedAt ?? raw.updated_at)
+            ),
+          },
+        ];
+
+  return {
+    id: String(raw.id),
+    externalKey: String(raw.externalKey ?? raw.external_key ?? raw.id),
+    title: safeString(raw.title) ?? "Untitled recommendation",
+    subtitle: safeString(raw.subtitle),
+    airport: safeString(raw.airport),
+    route: safeString(raw.route),
+    operatorName: safeString(raw.operatorName ?? raw.operator_name),
+    aircraftType: safeString(raw.aircraftType ?? raw.aircraft_type),
+    tail: safeString(raw.tail),
+    status: asStatus(raw.status),
+    priority: asPriority(raw.priority),
+    opportunityType: safeString(raw.opportunityType ?? raw.opportunity_type) ?? "concierge",
+    serviceLine: safeString(raw.serviceLine ?? raw.service_line) ?? "Nous Aviation",
+    estimatedValueCad: safeNumber(raw.estimatedValueCad ?? raw.estimated_value_cad),
+    confidence: safeNumber(raw.confidence),
+    urgency: safeNumber(raw.urgency),
+    actionWindow: safeString(raw.actionWindow ?? raw.action_window),
+    surfacedAt: timeAgo(
+      safeString(raw.lastSeenAt ?? raw.last_seen_at ?? raw.updatedAt ?? raw.updated_at)
+    ),
+    owner: safeString(raw.owner),
+    recommendedAction: safeString(raw.recommendedAction ?? raw.recommended_action),
+    suggestedChannel: safeString(raw.suggestedChannel ?? raw.suggested_channel),
+    suggestedTiming: safeString(raw.suggestedTiming ?? raw.suggested_timing),
+    playbook: safeString(raw.playbook),
+    sourceLevel: safeString(raw.sourceLevel ?? raw.source_level),
+    observedVsInferred: safeString(raw.observedVsInferred ?? raw.observed_vs_inferred),
+    crmRecordId: safeString(raw.crmRecordId ?? raw.crm_record_id),
+    whySurfaced: derivedWhySurfaced,
+    signalTypes: derivedSignalTypes,
+    eventTrail,
+    events,
+    signals,
+  };
+}
+
+function buildGapHints(item: Recommendation) {
+  const gaps: string[] = [];
+  if (!item.operatorName || item.operatorName.toLowerCase() === "unknown") {
+    gaps.push("Operator identity is still unresolved.");
+  }
+  if (!item.tail) {
+    gaps.push("Tail number is missing.");
+  }
+  if (!item.route && item.opportunityType === "charter_sales") {
+    gaps.push("Route context is missing for charter positioning.");
+  }
+  if (!item.owner) {
+    gaps.push("No owner is assigned yet.");
+  }
+  if (!item.suggestedChannel) {
+    gaps.push("Recommended channel is still missing.");
+  }
+  if (!item.playbook) {
+    gaps.push("Playbook mapping is still missing.");
+  }
+  return gaps;
+}
+
+async function fetchJson<T>(input: RequestInfo, init?: RequestInit): Promise<T> {
+  const res = await fetch(input, init);
+  const json = (await res.json().catch(() => ({}))) as T & { error?: string };
+  if (!res.ok) {
+    throw new Error((json as { error?: string }).error ?? "Request failed.");
+  }
+  return json;
 }
 
 export default function DecisionQueuePage() {
-  const [items, setItems] = useState<Recommendation[]>(INITIAL_RECOMMENDATIONS);
+  const [items, setItems] = useState<Recommendation[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [mutating, setMutating] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<"all" | QueueStatus>("all");
   const [priorityFilter, setPriorityFilter] = useState<"all" | Priority>("all");
-  const [selectedId, setSelectedId] = useState<string>(INITIAL_RECOMMENDATIONS[0].id);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
 
-  const filtered = useMemo(() => {
-    return items.filter((item) => {
-      const matchesSearch =
-        !search ||
-        [
-          item.title,
-          item.subtitle,
-          item.airport,
-          item.operator,
-          item.aircraftType,
-          item.tail ?? "",
-        ]
-          .join(" ")
-          .toLowerCase()
-          .includes(search.toLowerCase());
+  const [kpis, setKpis] = useState({
+    openActions: 0,
+    highPriority: 0,
+    expiringSoon: 0,
+    estimatedPipelineValue: 0,
+    sentToCrmToday: 0,
+    actionedToday: 0,
+  });
 
-      const matchesStatus = statusFilter === "all" || item.status === statusFilter;
-      const matchesPriority =
-        priorityFilter === "all" || item.priority === priorityFilter;
+  const loadQueue = useCallback(
+    async (opts?: { silent?: boolean; preserveSelection?: boolean }) => {
+      const silent = opts?.silent ?? false;
+      const preserveSelection = opts?.preserveSelection ?? true;
 
-      return matchesSearch && matchesStatus && matchesPriority;
-    });
-  }, [items, search, statusFilter, priorityFilter]);
+      if (!silent) {
+        setLoading(true);
+      } else {
+        setRefreshing(true);
+      }
+
+      setError(null);
+
+      try {
+        const params = new URLSearchParams();
+        params.set("includeKpis", "true");
+        if (search.trim()) params.set("search", search.trim());
+        if (statusFilter !== "all") params.set("status", statusFilter);
+        if (priorityFilter !== "all") params.set("priority", priorityFilter);
+
+        const data = await fetchJson<QueueListResponse>(
+          `/api/decision-queue?${params.toString()}`
+        );
+
+        const nextItems = safeArray<any>(data.items).map(normalizeQueueItem);
+
+        setItems(nextItems);
+        if (data.kpis) {
+          setKpis(data.kpis);
+        }
+
+        setSelectedId((current) => {
+          if (preserveSelection && current && nextItems.some((x) => x.id === current)) {
+            return current;
+          }
+          return nextItems[0]?.id ?? null;
+        });
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Failed to load decision queue.");
+        setItems([]);
+      } finally {
+        setLoading(false);
+        setRefreshing(false);
+      }
+    },
+    [search, statusFilter, priorityFilter]
+  );
+
+  useEffect(() => {
+    void loadQueue();
+  }, [loadQueue]);
 
   const selected =
-    filtered.find((x) => x.id === selectedId) ??
-    filtered[0] ??
+    items.find((item) => item.id === selectedId) ??
+    items[0] ??
     null;
 
-  const kpis = useMemo(() => {
-    const open = items.filter((x) =>
-      ["new", "reviewing", "approved"].includes(x.status)
-    );
-    const high = open.filter((x) => x.priority === "high");
-    const expiring = open.filter((x) => x.urgency >= 75);
-    const sentToday = items.filter((x) => x.status === "sent_to_crm");
-    const actioned = items.filter((x) =>
-      ["reviewing", "approved", "sent_to_crm"].includes(x.status)
-    );
-    const pipelineValue = open.reduce((sum, x) => sum + x.estimatedValue, 0);
+  const gapHints = useMemo(
+    () => (selected ? buildGapHints(selected) : []),
+    [selected]
+  );
 
-    return {
-      openActions: open.length,
-      highPriority: high.length,
-      expiringSoon: expiring.length,
-      estimatedPipelineValue: pipelineValue,
-      sentToCrmToday: sentToday.length,
-      actionedToday: actioned.length,
-    };
-  }, [items]);
+  const performPatch = useCallback(
+    async (id: string, body: Record<string, unknown>) => {
+      setMutating(true);
+      setError(null);
 
-  const updateStatus = (id: string, status: QueueStatus) => {
-    setItems((prev) => prev.map((x) => (x.id === id ? { ...x, status } : x)));
-  };
+      try {
+        await fetchJson(`/api/decision-queue/${id}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            actor: "decision-queue-ui",
+            ...body,
+          }),
+        });
 
-  const assignOwner = (id: string, owner: string) => {
-    setItems((prev) => prev.map((x) => (x.id === id ? { ...x, owner } : x)));
-  };
+        await loadQueue({ silent: true, preserveSelection: true });
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Failed to update queue item.");
+      } finally {
+        setMutating(false);
+      }
+    },
+    [loadQueue]
+  );
+
+  const sendToCrm = useCallback(
+    async (id: string) => {
+      setMutating(true);
+      setError(null);
+
+      try {
+        await fetchJson(`/api/decision-queue/${id}/send-to-crm`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            actor: "decision-queue-ui",
+            note: "Sent from decision queue review panel",
+          }),
+        });
+
+        await loadQueue({ silent: true, preserveSelection: true });
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Failed to send item to CRM.");
+      } finally {
+        setMutating(false);
+      }
+    },
+    [loadQueue]
+  );
+
+  const refreshQueue = useCallback(async () => {
+    await loadQueue({ silent: true, preserveSelection: true });
+  }, [loadQueue]);
 
   return (
     <div className="min-h-screen bg-[#05070A] text-white">
@@ -338,15 +525,30 @@ export default function DecisionQueuePage() {
             </div>
             <h1 className="mt-1 text-3xl font-semibold">Decision Queue</h1>
             <p className="mt-2 max-w-3xl text-sm text-white/60">
-              Ranked, explainable actions generated from live aviation signals and service-fit patterns.
+              Ranked, explainable actions generated from live aviation signals,
+              commercial fit scoring, and queue-side evidence.
             </p>
           </div>
 
-          <button className="inline-flex items-center gap-2 rounded-2xl border border-yellow-500/20 bg-yellow-500 px-4 py-3 text-sm font-medium text-black transition hover:bg-yellow-400">
-            <Sparkles className="h-4 w-4" />
+          <button
+            onClick={() => void refreshQueue()}
+            disabled={refreshing || loading}
+            className="inline-flex items-center gap-2 rounded-2xl border border-yellow-500/20 bg-yellow-500 px-4 py-3 text-sm font-medium text-black transition hover:bg-yellow-400 disabled:cursor-not-allowed disabled:opacity-70"
+          >
+            {refreshing || loading ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (
+              <RefreshCw className="h-4 w-4" />
+            )}
             Refresh queue
           </button>
         </div>
+
+        {error ? (
+          <div className="mb-6 rounded-3xl border border-red-400/15 bg-red-500/10 px-4 py-3 text-sm text-red-200">
+            {error}
+          </div>
+        ) : null}
 
         <div className="mb-6 grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
           {[
@@ -405,9 +607,12 @@ export default function DecisionQueuePage() {
               <option value="low">Low</option>
             </select>
 
-            <button className="inline-flex items-center justify-center gap-2 rounded-2xl border border-white/10 bg-black/20 px-4 py-3 text-sm text-white/80">
+            <button
+              onClick={() => void loadQueue({ silent: true, preserveSelection: true })}
+              className="inline-flex items-center justify-center gap-2 rounded-2xl border border-white/10 bg-black/20 px-4 py-3 text-sm text-white/80"
+            >
               <Filter className="h-4 w-4" />
-              Filters
+              Apply
             </button>
           </div>
         </div>
@@ -415,11 +620,17 @@ export default function DecisionQueuePage() {
         <div className="grid gap-6 xl:grid-cols-[520px,1fr]">
           <div className="rounded-3xl border border-white/10 bg-white/5 p-3 backdrop-blur-xl">
             <div className="mb-2 px-2 text-sm text-white/50">
-              {filtered.length} recommendations
+              {loading ? "Loading recommendations..." : `${items.length} recommendations`}
             </div>
 
             <div className="max-h-[78vh] space-y-3 overflow-y-auto pr-1">
-              {filtered.map((item) => (
+              {!loading && items.length === 0 ? (
+                <div className="rounded-3xl border border-white/10 bg-black/10 p-6 text-sm text-white/55">
+                  No queue items match the current filters.
+                </div>
+              ) : null}
+
+              {items.map((item) => (
                 <button
                   key={item.id}
                   onClick={() => setSelectedId(item.id)}
@@ -437,26 +648,39 @@ export default function DecisionQueuePage() {
                     >
                       {item.priority.toUpperCase()}
                     </span>
+
                     <span className="rounded-full border border-white/10 bg-white/5 px-2.5 py-1 text-[11px] text-white/75">
                       {typeLabel(item.opportunityType)}
                     </span>
+
                     <span
                       className={`rounded-full border px-2.5 py-1 text-[11px] ${statusClasses(
                         item.status
                       )}`}
                     >
-                      {item.status}
+                      {titleCaseStatus(item.status)}
                     </span>
+
                     <span className="text-[11px] text-white/40">{item.surfacedAt}</span>
                   </div>
 
                   <div className="text-base font-semibold">{item.title}</div>
-                  <div className="mt-1 text-sm text-white/55">{item.subtitle}</div>
+                  <div className="mt-1 text-sm text-white/55">
+                    {item.subtitle ??
+                      [
+                        item.tail,
+                        item.aircraftType,
+                        item.operatorName,
+                        item.airport,
+                      ]
+                        .filter(Boolean)
+                        .join(" • ")}
+                  </div>
 
                   <div className="mt-4 grid grid-cols-2 gap-2 text-sm md:grid-cols-4">
                     <div className="rounded-2xl bg-white/5 p-2">
                       <div className="text-[11px] text-white/40">Value</div>
-                      <div className="mt-1 font-medium">{currency(item.estimatedValue)}</div>
+                      <div className="mt-1 font-medium">{currency(item.estimatedValueCad)}</div>
                     </div>
                     <div className="rounded-2xl bg-white/5 p-2">
                       <div className="text-[11px] text-white/40">Confidence</div>
@@ -468,24 +692,28 @@ export default function DecisionQueuePage() {
                     </div>
                     <div className="rounded-2xl bg-white/5 p-2">
                       <div className="text-[11px] text-white/40">Window</div>
-                      <div className="mt-1 font-medium">{item.actionWindow}</div>
+                      <div className="mt-1 font-medium">{item.actionWindow ?? "Open"}</div>
                     </div>
                   </div>
 
                   <div className="mt-4 text-sm text-white/65">
-                    {item.whySurfaced[0]}
+                    {item.whySurfaced[0] ?? "Queue signal available for review."}
                   </div>
 
                   <div className="mt-4 flex flex-wrap gap-2">
                     <span className="rounded-full border border-white/10 bg-white/5 px-2.5 py-1 text-[11px] text-white/70">
                       {item.serviceLine}
                     </span>
-                    <span className="rounded-full border border-white/10 bg-white/5 px-2.5 py-1 text-[11px] text-white/70">
-                      {item.airport}
-                    </span>
-                    <span className="rounded-full border border-white/10 bg-white/5 px-2.5 py-1 text-[11px] text-white/70">
-                      {item.operator}
-                    </span>
+                    {item.airport ? (
+                      <span className="rounded-full border border-white/10 bg-white/5 px-2.5 py-1 text-[11px] text-white/70">
+                        {item.airport}
+                      </span>
+                    ) : null}
+                    {item.operatorName ? (
+                      <span className="rounded-full border border-white/10 bg-white/5 px-2.5 py-1 text-[11px] text-white/70">
+                        {item.operatorName}
+                      </span>
+                    ) : null}
                   </div>
                 </button>
               ))}
@@ -506,7 +734,15 @@ export default function DecisionQueuePage() {
                     </div>
                     <h2 className="mt-1 text-2xl font-semibold">{selected.title}</h2>
                     <div className="mt-2 text-sm text-white/60">
-                      {selected.subtitle}
+                      {selected.subtitle ??
+                        [
+                          selected.tail,
+                          selected.aircraftType,
+                          selected.operatorName,
+                          selected.airport,
+                        ]
+                          .filter(Boolean)
+                          .join(" • ")}
                     </div>
                   </div>
 
@@ -523,8 +759,13 @@ export default function DecisionQueuePage() {
                         selected.status
                       )}`}
                     >
-                      {selected.status}
+                      {titleCaseStatus(selected.status)}
                     </span>
+                    {selected.crmRecordId ? (
+                      <span className="rounded-full border border-purple-400/20 bg-purple-500/15 px-3 py-1 text-xs text-purple-200">
+                        CRM: {selected.crmRecordId}
+                      </span>
+                    ) : null}
                   </div>
                 </div>
 
@@ -532,7 +773,7 @@ export default function DecisionQueuePage() {
                   {[
                     {
                       label: "Estimated value",
-                      value: currency(selected.estimatedValue),
+                      value: currency(selected.estimatedValueCad),
                       icon: BriefcaseBusiness,
                     },
                     {
@@ -547,7 +788,7 @@ export default function DecisionQueuePage() {
                     },
                     {
                       label: "Action window",
-                      value: selected.actionWindow,
+                      value: selected.actionWindow ?? "Open",
                       icon: Clock3,
                     },
                   ].map((card) => (
@@ -565,19 +806,27 @@ export default function DecisionQueuePage() {
                     <div className="mt-3 grid gap-3 text-sm">
                       <div>
                         <div className="text-white/40">Action</div>
-                        <div className="mt-1 text-white/85">{selected.recommendedAction}</div>
+                        <div className="mt-1 text-white/85">
+                          {selected.recommendedAction ?? "Review and route to the right owner"}
+                        </div>
                       </div>
                       <div>
                         <div className="text-white/40">Channel</div>
-                        <div className="mt-1 text-white/85">{selected.suggestedChannel}</div>
+                        <div className="mt-1 text-white/85">
+                          {selected.suggestedChannel ?? "Research + outreach"}
+                        </div>
                       </div>
                       <div>
                         <div className="text-white/40">Timing</div>
-                        <div className="mt-1 text-white/85">{selected.suggestedTiming}</div>
+                        <div className="mt-1 text-white/85">
+                          {selected.suggestedTiming ?? "Today"}
+                        </div>
                       </div>
                       <div>
                         <div className="text-white/40">Playbook</div>
-                        <div className="mt-1 text-white/85">{selected.playbook}</div>
+                        <div className="mt-1 text-white/85">
+                          {selected.playbook ?? "Standard lead qualification"}
+                        </div>
                       </div>
                     </div>
                   </section>
@@ -587,13 +836,27 @@ export default function DecisionQueuePage() {
                     <div className="mt-3 grid gap-3 text-sm">
                       <div className="flex items-center gap-2 text-white/85">
                         <Plane className="h-4 w-4 text-yellow-300" />
-                        {selected.aircraftType}
+                        {selected.aircraftType ?? "Unknown aircraft"}
                         {selected.tail ? ` • ${selected.tail}` : ""}
                       </div>
-                      <div className="text-white/85">{selected.operator}</div>
-                      <div className="text-white/85">{selected.airport}</div>
-                      {selected.route && <div className="text-white/85">{selected.route}</div>}
-                      <div className="text-white/60">Service line: {selected.serviceLine}</div>
+                      <div className="text-white/85">
+                        {selected.operatorName ?? "Unknown operator"}
+                      </div>
+                      <div className="text-white/85">
+                        {selected.airport ?? "Airport not yet mapped"}
+                      </div>
+                      {selected.route ? (
+                        <div className="text-white/85">{selected.route}</div>
+                      ) : null}
+                      <div className="text-white/60">
+                        Service line: {selected.serviceLine}
+                      </div>
+                      {selected.owner ? (
+                        <div className="inline-flex items-center gap-2 text-white/70">
+                          <UserRound className="h-4 w-4 text-yellow-300" />
+                          Owner: {selected.owner}
+                        </div>
+                      ) : null}
                     </div>
                   </section>
                 </div>
@@ -610,11 +873,15 @@ export default function DecisionQueuePage() {
                     <div className="mt-4 grid gap-2 text-sm">
                       <div>
                         <span className="text-white/40">Source level:</span>{" "}
-                        <span className="text-white/80">{selected.sourceLevel}</span>
+                        <span className="text-white/80">
+                          {selected.sourceLevel ?? "Mixed"}
+                        </span>
                       </div>
                       <div>
                         <span className="text-white/40">Observed vs inferred:</span>{" "}
-                        <span className="text-white/80">{selected.observedVsInferred}</span>
+                        <span className="text-white/80">
+                          {selected.observedVsInferred ?? "Queue-side mixed evidence"}
+                        </span>
                       </div>
                     </div>
 
@@ -624,12 +891,40 @@ export default function DecisionQueuePage() {
                           key={signal}
                           className="rounded-full border border-white/10 bg-white/5 px-2.5 py-1 text-[11px] text-white/70"
                         >
-                          {signal}
+                          {signalLabel(signal)}
                         </span>
                       ))}
                     </div>
                   </section>
 
+                  <section className="rounded-3xl bg-black/20 p-4">
+                    <div className="flex items-center justify-between gap-3">
+                      <div className="text-sm font-semibold">Information gaps</div>
+                      <Link
+                        href="/llm"
+                        className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs text-white/75 transition hover:bg-white/10"
+                      >
+                        <Sparkles className="h-3.5 w-3.5 text-yellow-300" />
+                        Open LLM workspace
+                      </Link>
+                    </div>
+
+                    <div className="mt-4 space-y-2 text-sm text-white/75">
+                      {gapHints.length > 0 ? (
+                        gapHints.map((gap) => <div key={gap}>• {gap}</div>)
+                      ) : (
+                        <div>Core queue context looks complete enough for operator review.</div>
+                      )}
+                    </div>
+
+                    <div className="mt-4 rounded-2xl border border-white/10 bg-white/5 p-3 text-xs text-white/55">
+                      Use the LLM workspace to fill operator identity, contact path,
+                      route context, or service framing before escalation.
+                    </div>
+                  </section>
+                </div>
+
+                <div className="grid gap-5 xl:grid-cols-2">
                   <section className="rounded-3xl bg-black/20 p-4">
                     <div className="text-sm font-semibold">Event trail</div>
                     <div className="mt-4 space-y-3">
@@ -644,36 +939,96 @@ export default function DecisionQueuePage() {
                       ))}
                     </div>
                   </section>
+
+                  <section className="rounded-3xl bg-black/20 p-4">
+                    <div className="text-sm font-semibold">Signal evidence</div>
+                    <div className="mt-4 space-y-3">
+                      {(selected.signals ?? []).length > 0 ? (
+                        selected.signals!.map((signal, idx) => (
+                          <div key={`${signal.signalType}-${idx}`} className="rounded-2xl border border-white/10 bg-white/5 p-3">
+                            <div className="flex items-center justify-between gap-3">
+                              <div className="text-sm text-white/85">
+                                {signal.signalType ?? "signal"}
+                              </div>
+                              <div className="text-[11px] text-white/45">
+                                {timeAgo(signal.occurredAt)}
+                              </div>
+                            </div>
+                            <div className="mt-1 text-xs text-white/50">
+                              Source: {signal.signalSource ?? "unknown"}
+                              {typeof signal.confidence === "number"
+                                ? ` • Confidence ${signal.confidence}%`
+                                : ""}
+                            </div>
+                          </div>
+                        ))
+                      ) : (
+                        <div className="text-sm text-white/55">
+                          No attached signal rows were returned for this item yet.
+                        </div>
+                      )}
+                    </div>
+                  </section>
                 </div>
 
                 <div className="grid gap-3 md:grid-cols-5">
                   <button
-                    onClick={() => updateStatus(selected.id, "sent_to_crm")}
-                    className="rounded-2xl bg-yellow-500 px-4 py-3 text-sm font-medium text-black transition hover:bg-yellow-400"
+                    disabled={mutating || selected.status === "sent_to_crm"}
+                    onClick={() => void sendToCrm(selected.id)}
+                    className="rounded-2xl bg-yellow-500 px-4 py-3 text-sm font-medium text-black transition hover:bg-yellow-400 disabled:cursor-not-allowed disabled:opacity-60"
                   >
-                    Send to CRM
+                    {mutating && selected.status !== "sent_to_crm" ? "Working..." : "Send to CRM"}
                   </button>
+
                   <button
-                    onClick={() => updateStatus(selected.id, "reviewing")}
-                    className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-white/85 transition hover:bg-white/10"
+                    disabled={mutating}
+                    onClick={() =>
+                      void performPatch(selected.id, {
+                        action: "set_status",
+                        status: "reviewing",
+                      })
+                    }
+                    className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-white/85 transition hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-60"
                   >
                     Mark reviewing
                   </button>
+
                   <button
-                    onClick={() => assignOwner(selected.id, "Ava")}
-                    className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-white/85 transition hover:bg-white/10"
+                    disabled={mutating}
+                    onClick={() =>
+                      void performPatch(selected.id, {
+                        action: selected.owner ? "clear_owner" : "assign_owner",
+                        owner: selected.owner ? null : "Ava",
+                      })
+                    }
+                    className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-white/85 transition hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-60"
                   >
-                    Assign owner
+                    {selected.owner ? "Clear owner" : "Assign owner"}
                   </button>
+
                   <button
-                    onClick={() => updateStatus(selected.id, "snoozed")}
-                    className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-white/85 transition hover:bg-white/10"
+                    disabled={mutating}
+                    onClick={() =>
+                      void performPatch(selected.id, {
+                        action: "snooze",
+                        snoozeUntil: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
+                        note: "Snoozed from queue panel",
+                      })
+                    }
+                    className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-white/85 transition hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-60"
                   >
-                    Snooze
+                    Snooze 24h
                   </button>
+
                   <button
-                    onClick={() => updateStatus(selected.id, "dismissed")}
-                    className="rounded-2xl border border-red-400/15 bg-red-500/10 px-4 py-3 text-sm text-red-200 transition hover:bg-red-500/15"
+                    disabled={mutating}
+                    onClick={() =>
+                      void performPatch(selected.id, {
+                        action: "dismiss",
+                        reason: "Dismissed from queue panel",
+                      })
+                    }
+                    className="rounded-2xl border border-red-400/15 bg-red-500/10 px-4 py-3 text-sm text-red-200 transition hover:bg-red-500/15 disabled:cursor-not-allowed disabled:opacity-60"
                   >
                     Dismiss
                   </button>
@@ -682,8 +1037,9 @@ export default function DecisionQueuePage() {
                 <div className="rounded-3xl border border-white/10 bg-black/20 p-4">
                   <div className="mb-2 text-sm font-semibold">Operational notes</div>
                   <div className="text-sm text-white/65">
-                    This page should be the live triage surface. Use it to decide what matters now,
-                    then convert approved items into tracked opportunities.
+                    This surface now reads from the live decision queue API instead
+                    of local placeholder state. Use it to triage, assign, suppress,
+                    and push qualified actions into CRM.
                   </div>
                 </div>
               </div>
